@@ -25,6 +25,7 @@ from opendbc.car.hyundai.ioniq6_longitudinal import Ioniq6LongitudinalPolicy
 from opendbc.car.hyundai.canfd_dash_icons import CanFDDashIcons
 from opendbc.car.hyundai.classic_scc_aol import qualified as qualified_classic_stock_aol
 from opendbc.car.hyundai.canfd_stock_aol import qualified as qualified_canfd_stock_aol
+from opendbc.car.hyundai.blended_stock_aol import qualified as qualified_blended_stock_aol
 from opendbc.car.hyundai.ev6_aol import qualified as qualified_ev6_aol
 from opendbc.car.hyundai.g90_longitudinal import G90LongitudinalPolicy
 from opendbc.car.hyundai.gv70_longitudinal import is_gv70, scc_request, suppress_stock_cancel
@@ -363,7 +364,9 @@ class CarController(CarControllerBase):
                                                       CC.cruiseControl.override, use_fca, self.CP, lead_data=lead_data))
 
     # 20 Hz LFA MFA message
-    if self.frame % 5 == 0 and (self.CP.flags & HyundaiFlags.SEND_LFA.value or
+    factory_blended_display = (qualified_blended_stock_aol(self.CP, marked_only=True) and
+                               self.CP.flags & HyundaiFlags.CANFD_LKA_STEER_MSG)
+    if self.frame % 5 == 0 and not factory_blended_display and (self.CP.flags & HyundaiFlags.SEND_LFA.value or
                                self.blended_longitudinal is not None and self.CP.flags & HyundaiFlags.CANFD_LKA_STEER_MSG):
       if self._ray_lfa_8byte:
         can_sends.append(hyundaican.create_ray_lfahda_mfc(self._ray_lfa_packer, CC.latActive, self._ray_lfa_icon))
