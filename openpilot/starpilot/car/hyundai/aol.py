@@ -305,7 +305,11 @@ def independent_cruise_buttons_supported(CP, *, marked_only=False) -> bool:
   # Dedicated EV6 LONG raw-button/optional-release behavior stays unchanged.
   if CP.carFingerprint == HyundaiCAR.KIA_EV6 and CP.openpilotLongitudinalControl:
     return False
-  return bool(qualified_sonata_independent(CP) or
+  # Palisade HDA2 keeps the existing mixed-CAN stock native owner and word.
+  # This selects mapped host gestures; it grants no native steering authority.
+  return bool((qualified_blended_stock(CP, marked_only=marked_only) and
+               CP.flags & HyundaiFlags.CANFD_LKA_STEER_MSG) or
+              qualified_sonata_independent(CP) or
               qualified_angle_aol(CP, marked_only=marked_only) or
               qualified_canfd_stock(CP, marked_only=marked_only) or
               qualified_canfd_long(CP, marked_only=marked_only) or

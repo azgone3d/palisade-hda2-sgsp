@@ -312,9 +312,11 @@ class AolCardIntent:
       # owners keep their current event and native contracts.
       main_toggle = not independent_buttons or main_managed
       lkas_toggle = not independent_buttons or lkas_managed
-      previously_held = (self._main_held and main_toggle) or (self._lkas_held and lkas_toggle)
+      gesture_pressed = False
       cancel_pressed = False
       for event in CS.buttonEvents:
+        was_held = ((self._main_held and main_toggle and int(ButtonType.mainCruise) not in consumed_buttons) or
+                    (self._lkas_held and lkas_toggle and int(ButtonType.lkas) not in consumed_buttons))
         button = int(event.type.raw)
         if button == int(ButtonType.mainCruise):
           if (independent_buttons and event.pressed and not self._main_held and
@@ -328,11 +330,11 @@ class AolCardIntent:
           self._lkas_held = bool(event.pressed)
         elif button == int(ButtonType.cancel) and event.pressed:
           cancel_pressed = True
-      gesture_held = ((self._main_held and main_toggle and
-                       (not independent_buttons or int(ButtonType.mainCruise) not in consumed_buttons)) or
-                      (self._lkas_held and lkas_toggle and
-                       (not independent_buttons or int(ButtonType.lkas) not in consumed_buttons)))
-      if not previously_held and gesture_held and (not independent_buttons or not cancel_pressed):
+        held = ((self._main_held and main_toggle and int(ButtonType.mainCruise) not in consumed_buttons) or
+                (self._lkas_held and lkas_toggle and int(ButtonType.lkas) not in consumed_buttons))
+        # Preserve a physical edge even when its release shares this batch.
+        gesture_pressed |= bool(not was_held and held)
+      if gesture_pressed and (not independent_buttons or not cancel_pressed):
         self._last_latch_edge_ns = now_ns
       if cancel_pressed:
         # An unassigned cruise CANCEL cannot toggle, arm or renew independent
@@ -342,7 +344,7 @@ class AolCardIntent:
           self.allowed_latch = False
       elif not self._gesture_neutral_seen:
         self._gesture_neutral_seen = not (self._main_held or self._lkas_held)
-      elif not previously_held and gesture_held and self.settings.enabled and not CS.accFaulted and not self._fault_inhibit:
+      elif gesture_pressed and self.settings.enabled and not CS.accFaulted and not self._fault_inhibit:
         # The physical gesture owns lateral intent even while ordinary cruise
         # is engaged. Dropping only the AOL latch leaves standard steering on.
         lateral_engaged = not self.pause_lateral and (self.allowed_latch or standard_enabled)
