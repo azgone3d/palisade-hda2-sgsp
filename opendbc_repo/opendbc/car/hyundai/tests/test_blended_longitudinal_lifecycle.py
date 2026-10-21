@@ -165,6 +165,8 @@ class TestBlendedLifecycle(unittest.TestCase):
     calls = []
 
     class PartialCar:
+      prepare_pe_restoration = card.Car.prepare_pe_restoration
+
       def __init__(self):
         self.vehicle_startup = SimpleNamespace(close=lambda: calls.append('closed'))
         raise RuntimeError('Constructor failed after owner registration')
