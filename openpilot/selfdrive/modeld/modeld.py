@@ -47,6 +47,7 @@ from openpilot.starpilot.models.status import ModelVariant
 from openpilot.starpilot.models.startup import report_load_timeout, wait_for_chestnut_power
 from openpilot.starpilot.models.recovery import STARTUP_FALLBACK_EXIT
 from openpilot.starpilot.navigation.intent import TurnIntent, matching_turn_signal
+from openpilot.starpilot.car.hyundai.palisade_turn import turn_desire as palisade_turn_desire
 from openpilot.starpilot.models.catalog import BUNDLED_CURRENT, BY_ID, DEFAULT_SMALL, DEFAULT_SMALL_SHA256
 from openpilot.starpilot.models.runner import CatalogModelState, load_verified_model
 from openpilot.starpilot.models import jetlink_adapter
@@ -496,8 +497,10 @@ def main(demo=False):
 
     sm.update(0)
     turn_supported = bool(model.npy.get('desire') is not None and model.npy['desire'].shape[-1] == 8)
-    desire = navigation_turn.select(sm, time.monotonic_ns(), DH.desire,
+    desire_now_ns = time.monotonic_ns()
+    desire = navigation_turn.select(sm, desire_now_ns, DH.desire,
                                      supported=turn_supported, model_stop=bool(prev_action.shouldStop))
+    desire = palisade_turn_desire(CP, sm, desire_now_ns, desire, supported=turn_supported)
     is_rhd = sm["driverMonitoringState"].isRHD
     frame_id = sm["narrowRoadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
@@ -613,7 +616,8 @@ def main(demo=False):
       engaged = bool(sm['carControl'].latActive)
       DH.update(car_state, sm['carControl'].latActive, lane_change_prob,
                 auto_evidence=auto_ready, engaged=engaged,
-                navigation_turn=matching_turn_signal(sm, mono_now_ns, supported=turn_supported))
+                navigation_turn=desire in (log.Desire.turnLeft, log.Desire.turnRight) or
+                  matching_turn_signal(sm, mono_now_ns, supported=turn_supported))
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
 
