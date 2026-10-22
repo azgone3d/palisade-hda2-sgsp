@@ -968,7 +968,9 @@ class SelfdriveD:
 
   def defer_expired_axis_publication(self, CS, initial_state, *, now_ns=None):
     """Keep an existing unexpired proof for one normal tick; issue no new lease."""
-    if REPLAY or not self.aol_replay or not self.axis_transport_required or not (qualified_ioniq6(self.CP) or qualified_gm(self.CP)):
+    from opendbc.car.hyundai.blended_stock_aol import qualified_alpha
+    palisade = qualified_alpha(self.CP, marked_only=True) and self.CP.safetyConfigs[0].safetyParam == 0x2014
+    if REPLAY or not self.aol_replay or not self.axis_transport_required or not (qualified_ioniq6(self.CP) or qualified_gm(self.CP) or palisade):
       return False
     proof = getattr(self, 'aol_step_input_proof', None)
     if now_ns is None:

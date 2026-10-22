@@ -141,6 +141,7 @@ class AolCardIntent:
     self.settings = settings
     self.explicit_latch = explicit_latch
     self.independent_cruise_buttons = independent_cruise_buttons
+    self.cancel_disarms_lateral = False
     self.lkas_button_supported = lkas_button_supported
     self.allowed_latch = False
     # Observational only: records the exact branch that changed True to False.
@@ -338,8 +339,9 @@ class AolCardIntent:
         self._last_latch_edge_ns = now_ns
       if cancel_pressed:
         # An unassigned cruise CANCEL cannot toggle, arm or renew independent
-        # lateral. Keep the existing withdrawal for configured CANCEL actions.
-        if not independent_buttons or any(self.settings.cancel_actions):
+        # lateral. Explicit native CANCEL contracts and configured actions
+        # still withdraw it on this exact physical source.
+        if self.cancel_disarms_lateral or not independent_buttons or any(self.settings.cancel_actions):
           self._record_latch_clear('cancel_press')
           self.allowed_latch = False
       elif not self._gesture_neutral_seen:

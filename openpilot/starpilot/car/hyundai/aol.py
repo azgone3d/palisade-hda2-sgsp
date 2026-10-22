@@ -285,8 +285,12 @@ def create_intent(CP, settings):
   from openpilot.starpilot.aol.intent import AolCardIntent
 
   independent_cruise_buttons = independent_cruise_buttons_supported(CP)
-  return AolCardIntent(settings, explicit_latch=policy_for(CP).explicit_latch,
-                       independent_cruise_buttons=independent_cruise_buttons)
+  owner = AolCardIntent(settings, explicit_latch=policy_for(CP).explicit_latch,
+                        independent_cruise_buttons=independent_cruise_buttons)
+  # The exact mixed HDA2 native owner revokes its token on physical CANCEL.
+  # Withdraw host intent on that same source instead of awaiting a refusal.
+  owner.cancel_disarms_lateral = qualified_blended_stock(CP) and CP.safetyConfigs[0].safetyParam == 0x2010
+  return owner
 
 
 def ordinary_axis_request_allowed(CP, CS) -> bool:

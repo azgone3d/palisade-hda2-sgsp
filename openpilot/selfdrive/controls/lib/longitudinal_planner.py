@@ -36,6 +36,7 @@ from openpilot.starpilot.longitudinal.lead_takeoff import LeadTakeoff, project a
 from openpilot.starpilot.longitudinal.lead_behavior import adjust as adjust_lead_behavior
 from openpilot.starpilot.longitudinal.lead_approach import LeadApproach, LeadApproachKey, project as project_approach
 from openpilot.starpilot.lateral.lane_change_preferences import LaneChangePolicy
+from openpilot.starpilot.car.hyundai.palisade_gap import lead_buffer as palisade_lead_buffer
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
@@ -267,7 +268,8 @@ class LongitudinalPlanner:
                     follow_seconds=follow if follow is not None else
                     (self.last_profile.follow_seconds if self.last_profile is not None else None),
                     acceleration_max=acceleration_cap,
-                    stop_line_m=self.force_stop_plan.obstacle_m, modelV2=qualified_model_leads(sm, sample_now_ns, self.model_lead_history))
+                    stop_line_m=self.force_stop_plan.obstacle_m, modelV2=qualified_model_leads(sm, sample_now_ns, self.model_lead_history),
+                    lead_buffer_m=palisade_lead_buffer(self.CP, sm, sample_now_ns))
 
     # MPC has selected the actual follow time for this model cycle. Its solve
     # does not use the Curve cruise cap, so a provider may now evaluate the
