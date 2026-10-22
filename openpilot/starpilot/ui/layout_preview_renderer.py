@@ -18,6 +18,7 @@ from openpilot.starpilot.ui.developer_preview import OnroadVisualPreview
 from openpilot.starpilot.ui.onroad_customization import CAMERA_WIDGETS, PROFILES, RUNTIME_PREVIEW_WIDGETS, placement, validate_document, widget_size
 from openpilot.starpilot.ui.onroad_widget_style import draw_widget_frame
 from openpilot.starpilot.curve_speed.status import CurveObservation
+from openpilot.starpilot.ui.telemetry_observation import TelemetryObservation
 from openpilot.starpilot.ui.onroad_state import ConditionalLead
 from openpilot.starpilot.ui.onroad_state import AlertSize, ObservationKind, OnroadAlert, OnroadState, SourceReading, SpeedLimitObservation
 from openpilot.starpilot.ui.appearance_preferences import CameraViewChoice, OnroadAppearance
@@ -92,6 +93,12 @@ def sample_state(scene: str, document: dict) -> OnroadState:
                      experimental_enabled=scene == "experimental" or scene in CEM_SCENE_REASONS, lateral_active=lateral,
                      longitudinal_active=longitudinal, stock_cruise_active=False,
                      slc_system_long_available=longitudinal, torque_utilization=0.78 if lateral else 0.0,
+                     telemetry=TelemetryObservation(angle=5.1, desired_lateral=-.11 if lateral else None,
+                       actual_lateral=-.08 if lateral else None, target_torque=.18 if lateral else 0.,
+                       applied_torque=.17 if lateral else 0., driver_torque=False, gas_pressed=False,
+                       brake_pressed=scene == 'braking', acceleration=-.23 if scene == 'braking' else 0.,
+                       target_acceleration=-.3 if scene == 'braking' else 0., command_acceleration=-.25 if scene == 'braking' else 0.,
+                       output_acceleration=-.2 if scene == 'braking' else 0., lateral_active=lateral),
                      customization=document,
                      visual_preview=OnroadVisualPreview(cem_reason=CEM_SCENE_REASONS[scene], layout_sample=True) if scene in CEM_SCENE_REASONS else None)
 

@@ -4,6 +4,7 @@ No message default, missing drive history, or old onroad message is presented as
 an observed value. This module has no transport construction or write path.
 """
 
+from openpilot.starpilot.ui.telemetry_observation import TelemetryObservation, observe_telemetry
 from openpilot.starpilot.ui.onroad_customization import STOPPED_TIMER_WIDGET, default_document, placement, read_customization
 # Temporary old-route replay compatibility; remove with the marked hook below.
 from openpilot.starpilot.ui.old_starpilot_route_shim import speed_limit_fallback
@@ -648,7 +649,15 @@ class RuntimeSnapshotAdapter:
       torque=current_message(sm, 'lateralTorqueParameters', now_ns, after_frame=after) if started else None,
       parameters=display_message(sm, 'vehicleParameters', now_ns, after_frame=after) if started else None,
       metric=bool(ui.is_metric), cp=cp)
-    onroad = OnroadState(developer_metrics=developer_metrics,
+    telemetry = TelemetryObservation()
+    if started and placement(self._customization_value, 'large', 'telemetry_overlay')['enabled']:
+      telemetry = observe_telemetry(
+        current_message(sm, 'carState', now_ns, after_frame=after),
+        current_message(sm, 'carControl', now_ns, after_frame=after),
+        current_message(sm, 'controlsState', now_ns, after_frame=after),
+        current_message(sm, 'carOutput', now_ns, after_frame=after),
+        current_message(sm, 'longitudinalPlan', now_ns, after_frame=after))
+    onroad = OnroadState(developer_metrics=developer_metrics, telemetry=telemetry,
                          engaged=display_lat_active or display_long_active or longitudinal_overridden, camera_available=started,
                          speed_mps=raw_speed, cruise_kph=cruise, speed_limit=observation,
                          appearance=self._appearance_value, customization=self._customization_value,

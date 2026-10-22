@@ -12,6 +12,7 @@ from enum import StrEnum
 import math
 from typing import Protocol
 
+from openpilot.starpilot.ui.telemetry_observation import TelemetryObservation
 from openpilot.starpilot.ui.presentation import Profile
 from openpilot.starpilot.ui.appearance_preferences import OnroadAppearance
 from openpilot.starpilot.curve_speed.status import CurveObservation
@@ -215,6 +216,7 @@ class OnroadState:
   observed_ns: int = 0
   viewport_width: float = 2160.0
   developer_metrics: tuple[DeveloperMetric, ...] = ()
+  telemetry: TelemetryObservation = TelemetryObservation()
 
   @property
   def cruise_active(self) -> bool:

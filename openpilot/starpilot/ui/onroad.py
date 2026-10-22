@@ -33,6 +33,7 @@ from openpilot.starpilot.ui.layout_preview_sidebar import SIDEBAR_WIDTH
 from openpilot.starpilot.ui.onroad_state import AlertSize, OnroadState, slc_controls
 from openpilot.starpilot.ui.onroad_stopped_timer import duration_color, duration_text, timer_size
 from openpilot.starpilot.ui.onroad_torque import TorqueBarWidget
+from openpilot.starpilot.ui.onroad_telemetry import TelemetryOverlay
 from openpilot.starpilot.ui.onroad_navigation import NavigationCard
 from openpilot.starpilot.ui.onroad_navigation_favorites import NavigationFavorites
 from openpilot.starpilot.ui.presentation import BitmapFonts, FontRole, Profile
@@ -130,6 +131,7 @@ class OnroadView:
       self.current_speed = CurrentSpeedHud(fonts)
       self.cem_gauge = AetherGauge(fonts)
       self.steering_wheel = SteeringWheelWidget(asset_directory)
+      self.telemetry_overlay = TelemetryOverlay(fonts, asset_directory)
     else:
       self.compact_hud = CompactHudRenderer(fonts, asset_directory)
       self.compact_sidebar = MiciSidebarWidgets(fonts)
@@ -290,6 +292,7 @@ class OnroadView:
     if pip is not None and (large or not driver_camera and state.appearance.camera_view != CameraViewChoice.NONE):
       pip(content, state, submit=submit)
     if large:
+      submit("telemetry_overlay", lambda: self.telemetry_overlay.render(state))
       if "nav_map" in state.customization["layouts"]["large"] and state.alert.size != AlertSize.FULL:
         if map_layer := getattr(self, "map_layer", None):
           submit("nav_map", lambda: map_layer(content, state))
@@ -372,6 +375,7 @@ class OnroadView:
         if self.extra_overlays is not None:
           self.extra_overlays(content, state)
       else:
+        self.telemetry_overlay.render(state)
         pip_layer = getattr(self, "pip_layer", None)
         if pip_layer is not None and state.camera_available:
           pip_layer(content, state)
@@ -555,6 +559,7 @@ class OnroadView:
     self.navigation.close()
     if self.fonts.profile == Profile.LARGE:
       self.steering_wheel.close()
+      self.telemetry_overlay.close()
     else:
       self.compact_hud.close()
       if self._fade is not None and rl.is_window_ready():

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from openpilot.starpilot.system.android_auto.identity import DATA_DIR
 from openpilot.starpilot.system.android_auto.display_profile import screen_geometry
-from openpilot.starpilot.ui.onroad_customization import (CEM_GAUGE_WIDGET, CLOCK_WIDGET, MODE_WIDGET, STOPPED_TIMER_WIDGET,
+from openpilot.starpilot.ui.onroad_customization import (CEM_GAUGE_WIDGET, CLOCK_WIDGET, MODE_WIDGET, STOPPED_TIMER_WIDGET, TELEMETRY_WIDGET,
                                                          CEM_GAUGE_FRAME, CEM_GAUGE_INSET, SPEED_ALIGNMENTS, customization_metadata, validate_widget_order)
 from openpilot.starpilot.ui.onroad_stopped_timer import timer_size
 from openpilot.starpilot.ui.onroad_torque_geometry import maximum_footprint
@@ -70,6 +70,10 @@ def layout_metadata_for_viewport(viewport):
                  reservedZones=[], inputZones=[])
   profile.pop('inputZonePriority', None)
   widgets = profile['widgets']
+  # The telemetry source is opt-in on the native large UI. Do not expose an AA
+  # toggle until projection can request the same freshness-qualified snapshot.
+  widgets.pop(TELEMETRY_WIDGET, None)
+  profile['widgetOrder'] = [key for key in profile['widgetOrder'] if key != TELEMETRY_WIDGET]
   widgets['current_speed']['default']['x'] += (width - 1860) / 2
   widgets[MODE_WIDGET]['default']['x'] += (width - 1860) / 2
   widgets[CLOCK_WIDGET]['default']['x'] += (width - 1860) / 2
@@ -375,7 +379,7 @@ def projection_customization(document, base_customization):
   result.setdefault('widgetOrder', {}).pop('large', None)
   if 'widgetOrder' in document:
     result['widgetOrder']['large'] = list(document['widgetOrder'])
-  result['layouts']['large'] = {}
+  result['layouts']['large'] = {TELEMETRY_WIDGET: dict(native[TELEMETRY_WIDGET]['default'])}
   for key, placement in document['widgets'].items():
     dx, dy = shifts.get(key, (0, 0))
     result['layouts']['large'][key] = {**placement, 'x': placement['x'] - dx, 'y': placement['y'] - dy}
