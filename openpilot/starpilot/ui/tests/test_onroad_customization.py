@@ -229,7 +229,8 @@ def test_resized_wheel_draw_and_touch_share_large_bounds():
     wheel.render(rl.Rectangle(30, 30, 1800, 1020), state)
   assert circle.call_args.args[:3] == (1420, 220, 120)
   rect = texture.call_args.args[2]
-  assert (rect.x, rect.y, rect.width, rect.height) == (1330, 130, 180, 180)
+  origin = texture.call_args.args[3]
+  assert (rect.x - origin.x, rect.y - origin.y, rect.width, rect.height) == (1330, 130, 180, 180)
   emit = Mock()
   inputs = OnroadInput(emit)
   for x, y in ((1300, 100), (1539, 339)):

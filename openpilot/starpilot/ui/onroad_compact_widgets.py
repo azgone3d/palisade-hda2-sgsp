@@ -17,7 +17,7 @@ from openpilot.starpilot.ui.onroad_curve import controlling as curve_controlling
 from openpilot.starpilot.ui.onroad_conditional import reason as conditional_reason, status as conditional_status, stop_active
 from openpilot.starpilot.ui.presentation import BitmapFonts, FontRole
 from openpilot.starpilot.ui.onroad_widget_style import draw_widget_frame
-from openpilot.starpilot.ui.wheel_feedback import WheelFeedbackFade
+from openpilot.starpilot.ui.wheel_feedback import WheelFeedbackFade, wheel_rotation
 from openpilot.starpilot.ui.speed_limit_pulse import SpeedLimitPulse
 from openpilot.starpilot.ui.unified_speed_presentation import displayed_limit_mps
 from openpilot.starpilot.ui.moon import draw_moon
@@ -166,7 +166,7 @@ class CompactHudRenderer:
       size, _ = widget_size(state.customization, "compact", "steering_wheel")
       rl.draw_texture_pro(self._wheel, rl.Rectangle(0, 0, 50, 50),
                           rl.Rectangle(21 + wx + size / 2, 176 + wy + size / 2 + wheel_y, size, size),
-                          rl.Vector2(size / 2, size / 2), 0,
+                          rl.Vector2(size / 2, size / 2), wheel_rotation(state.steering_angle_deg),
                           rl.Color(*color, int(wheel_alpha)))
 
   def close(self) -> None:

@@ -1,4 +1,4 @@
-"""Display-only wheel colors from caller-qualified vehicle observations."""
+"""Display-only wheel angle and colors from qualified vehicle observations."""
 
 import math
 from typing import Any
@@ -6,6 +6,20 @@ from typing import Any
 
 BRAKE_RGB = (255, 0, 0)
 ACCEL_RGB = (22, 127, 64)
+
+
+def observe_wheel_angle(car_state: Any) -> float | None:
+  """Inputs must already satisfy transport freshness and current-drive checks."""
+  if (car_state is None or getattr(car_state, "canValid", None) is not True or
+      getattr(car_state, "canTimeout", None) is not False):
+    return None
+  angle = getattr(car_state, "steeringAngleDeg", None)
+  return float(angle) if (type(angle) is int or type(angle) is float) and math.isfinite(angle) else None
+
+
+def wheel_rotation(angle: float | None) -> float:
+  # Vehicle angles are positive left; the renderer rotates clockwise.
+  return -float(angle) if (type(angle) is int or type(angle) is float) and math.isfinite(angle) else 0.0
 
 
 def observe_wheel_acceleration(car_state: Any) -> float | None:

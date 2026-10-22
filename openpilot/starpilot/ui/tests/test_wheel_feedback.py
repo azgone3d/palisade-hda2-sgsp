@@ -22,7 +22,7 @@ from openpilot.starpilot.ui.presentation import Profile
 from openpilot.starpilot.ui.runtime_snapshot import RuntimeSnapshotAdapter
 from openpilot.starpilot.ui.shell import ShellMode
 from openpilot.starpilot.ui.tests.test_runtime_snapshot import NOW, ui_fake
-from openpilot.starpilot.ui.wheel_feedback import ACCEL_RGB, BRAKE_RGB, WheelFeedbackFade, observe_wheel_acceleration
+from openpilot.starpilot.ui.wheel_feedback import ACCEL_RGB, BRAKE_RGB, WheelFeedbackFade, observe_wheel_acceleration, observe_wheel_angle
 
 
 def car(**changes):
@@ -41,6 +41,40 @@ def required_change(row):
 
 
 class WheelFeedbackTests(unittest.TestCase):
+  def test_angle_uses_current_measured_car_state(self):
+    ui = ui_fake()
+    vars(ui.sm.messages['carState']).update(vars(car(steeringAngleDeg=45.)))
+    adapter = RuntimeSnapshotAdapter(ui)
+    self.assertEqual(adapter.build(ShellMode.ONROAD, now_ns=NOW).onroad.steering_angle_deg, 45.)
+    ui.sm.logMonoTime['carState'] = NOW - 201_000_000
+    self.assertIsNone(adapter.build(ShellMode.ONROAD, now_ns=NOW).onroad.steering_angle_deg)
+    for value in (None, True, '45', float('nan'), float('inf')):
+      self.assertIsNone(observe_wheel_angle(car(steeringAngleDeg=value)))
+    self.assertIsNone(observe_wheel_angle(car(steeringAngleDeg=45., canValid=False)))
+
+  def test_both_wheels_rotate_about_their_fixed_centers(self):
+    state = OnroadState(True, True, 10, None, SpeedLimitObservation(), lateral_active=True)
+    large = SteeringWheelWidget(Path('/unused'))
+    large._texture = Mock()
+    compact = CompactHudRenderer(Mock(), Path('/unused'))
+    compact._wheel = Mock()
+    with patch.object(rl, 'draw_circle'), patch.object(rl, 'draw_texture_pro') as draw:
+      for widget in (large, compact):
+        center = None
+        for angle in (0., 45., -90., 180., None):
+          sample = replace(state, steering_angle_deg=angle)
+          if widget is large:
+            widget.render(rl.Rectangle(30, 30, 1800, 1020), sample)
+          else:
+            widget.render_steering_wheel(sample)
+          args = draw.call_args.args
+          self.assertEqual(args[4], -(angle or 0.))
+          current = (args[2].x, args[2].y, args[3].x, args[3].y)
+          self.assertGreater(args[3].x, 0)
+          if center is not None:
+            self.assertEqual(current, center)
+          center = current
+
   def test_only_finite_measurements_with_valid_can_are_observed(self):
     for acceleration in (-2., 0, .5):
       self.assertEqual(observe_wheel_acceleration(car(aEgo=acceleration, brakePressed=True)), acceleration)
@@ -89,7 +123,7 @@ class WheelFeedbackTests(unittest.TestCase):
       for elapsed_ms in (100, 200, 300, 400, 500, 600):
         large.render(rl.Rectangle(30, 30, 1800, 1020), replace(state, observed_ns=NOW + elapsed_ms * 1_000_000))
       args = draw.call_args.args
-      self.assertEqual((args[2].x, args[2].y), (924, 224))
+      self.assertEqual((args[2].x - args[3].x, args[2].y - args[3].y), (924, 224))
       self.assertEqual((args[-1].r, args[-1].g, args[-1].b, args[-1].a), (*BRAKE_RGB, 255))
       large.render(rl.Rectangle(30, 30, 1800, 1020), replace(state, wheel_acceleration=-1.0))
       self.assertEqual(tuple(getattr(draw.call_args.args[-1], key) for key in 'rgba'), (255, 128, 128, 255))
