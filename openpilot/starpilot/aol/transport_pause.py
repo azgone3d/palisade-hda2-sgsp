@@ -1011,13 +1011,16 @@ class TransportPauseFeedback:
           signature[14:16] != self.signature[14:16]):
         self.failed = True
         return True
-      if (cp.brand == 'gm' and current and continuity and latched and not self.failed and
+      if (cp.brand in ('gm', 'hyundai') and current and continuity and latched and not self.failed and
           not self.ever_lateral_active and not self.pending_event and reason == 'none' and
           axis.nativeAcknowledged and not any(signature[9:13]) and
           intent_producer_session and signature[14] == intent_producer_session and
           (self.signature is None or signature[14:16] == self.signature[14:16]) and
           0 < axis.sourceCarStateMonoTime <= stamp and now_ns - axis.sourceCarStateMonoTime <= AXIS_MAX_AGE_NS):
-        from openpilot.starpilot.car.gm.aol import cold_park_readiness
+        if cp.brand == 'gm':
+          from openpilot.starpilot.car.gm.aol import cold_park_readiness
+        else:
+          from openpilot.starpilot.car.hyundai.palisade_park import cold_park_readiness
         native = _healthy_transport_native(sm, cp, cs, str(axis.sessionId), now_ns)
         event_ns = int(sm.logMonoTime['onroadEvents'])
         if (axis.faultEventMonoTime == event_ns and sm.seen['onroadEvents'] and
