@@ -133,3 +133,17 @@ def test_short_source_cutoff_can_use_only_original_unexpired_publication(success
       assert held.validUntilMonoTime == deadline
     finally:
       case.doCleanups()
+
+@pytest.mark.parametrize('source_age', [0, 10_000_000, 30_000_000])
+def test_fresh_source_skips_deferral_qualification(source_age):
+  from openpilot.selfdrive.selfdrived.selfdrived import SelfdriveD
+  now = BASE + 30_000_000
+  source = now - source_age
+  proof = (None, source, None, now + 1)
+  sd = SimpleNamespace(aol_replay=True, axis_transport_required=True,
+                       aol_step_input_proof=proof, aol_published_input_proof=proof,
+                       conditional_car_state_valid=True, aol_car_state_log_ns=source)
+  with patch('opendbc.car.hyundai.blended_stock_aol.qualified_alpha') as qualify:
+    assert not SelfdriveD.defer_expired_axis_publication(sd, SimpleNamespace(), (), now_ns=now)
+    qualify.assert_not_called()
+  assert not hasattr(sd, 'aol_step_deferral_checked')

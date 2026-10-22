@@ -968,9 +968,7 @@ class SelfdriveD:
 
   def defer_expired_axis_publication(self, CS, initial_state, *, now_ns=None):
     """Keep an existing unexpired proof for one normal tick; issue no new lease."""
-    from opendbc.car.hyundai.blended_stock_aol import qualified_alpha
-    palisade = qualified_alpha(self.CP, marked_only=True) and self.CP.safetyConfigs[0].safetyParam == 0x2014
-    if REPLAY or not self.aol_replay or not self.axis_transport_required or not (qualified_ioniq6(self.CP) or qualified_gm(self.CP) or palisade):
+    if REPLAY or not self.aol_replay or not self.axis_transport_required:
       return False
     proof = getattr(self, 'aol_step_input_proof', None)
     if now_ns is None:
@@ -990,6 +988,13 @@ class SelfdriveD:
         CS.buttonEvents or any(sample.buttonEvents for sample, _ in getattr(self, 'car_state_samples', ())) or
         any(self.events.contains(kind) for kind in (ET.ENABLE, ET.SOFT_DISABLE, ET.IMMEDIATE_DISABLE)) or
         (self.aol_axis_decision.lateral_active, self.aol_axis_decision.longitudinal_active) != (proof[8], proof[9])):
+      return False
+    # Fresh inputs and unusable proofs are the ordinary fast path. Qualify the
+    # vehicle only when a bounded deferral is actually a candidate; never cache
+    # qualification or skip the native, health, and absolute-deadline checks.
+    from opendbc.car.hyundai.blended_stock_aol import qualified_alpha
+    palisade = qualified_alpha(self.CP, marked_only=True) and self.CP.safetyConfigs[0].safetyParam == 0x2014
+    if not (qualified_ioniq6(self.CP) or qualified_gm(self.CP) or palisade):
       return False
     # This eligibility check uses the same native/intent/health checks as an
     # existing bounded input wait. It never changes the source or publishes an
