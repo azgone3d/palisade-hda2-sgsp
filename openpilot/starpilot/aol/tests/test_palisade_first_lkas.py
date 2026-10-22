@@ -1,6 +1,7 @@
 """Palisade first-use LKAS with stock cruise off; no vehicle I/O."""
 
 from openpilot.common.prefix import OpenpilotPrefix
+import pytest
 from openpilot.cereal import messaging
 from opendbc.car import structs as car
 from opendbc.car.hyundai.tests.test_blended_stock_aol import params
@@ -13,7 +14,7 @@ from openpilot.starpilot.car.hyundai.aol import create_intent, policy_for
 BASE = 10_000_000_000
 
 
-def test_only_stock_palisade_hda2_has_independent_cruise_readiness():
+def test_only_exact_palisade_hda2_profiles_have_independent_cruise_readiness():
   stock = params(hda2=True)
   assert not policy_for(stock).cruise_main_required
   assert policy_for(params(hda2=False)).cruise_main_required
@@ -21,7 +22,7 @@ def test_only_stock_palisade_hda2_has_independent_cruise_readiness():
   longitudinal.openpilotLongitudinalControl = True
   longitudinal.pcmCruise = False
   longitudinal.safetyConfigs[0].safetyParam = 0x2014
-  assert policy_for(longitudinal).cruise_main_required
+  assert not policy_for(longitudinal).cruise_main_required
   stock.safetyConfigs[0].safetyParam |= 4
   assert policy_for(stock).cruise_main_required
 
@@ -30,8 +31,12 @@ class Snapshot(dict):
   pass
 
 
-def test_first_lkas_without_any_prior_cruise_then_brake_and_main():
+@pytest.mark.parametrize('alpha', [False, True])
+def test_first_lkas_without_any_prior_cruise_then_brake_and_main(alpha):
   cp = params(hda2=True)
+  if alpha:
+    cp.openpilotLongitudinalControl, cp.pcmCruise = True, False
+    cp.safetyConfigs[0].safetyParam = 0x2014
   cp.alternativeExperience = 32
   owner = create_intent(cp, AolSettings(True, 0.0, 9, 0, (0, 0, 0), (0, 0, 0)))
   cs = car.CarState(canValid=True, gearShifter='drive', vEgo=10.0)

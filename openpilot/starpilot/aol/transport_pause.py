@@ -332,7 +332,9 @@ class TransportPauseFeedback:
       return None
     owners = [index for index, config in enumerate(cp.safetyConfigs)
               if str(config.safetyModel) not in ('silent', 'noOutput')]
-    return native if (len(owners) == 1 and (gm or not native.pandaInventory[owners[0]].controlsAllowed and
+    from opendbc.car.hyundai.blended_stock_aol import qualified_alpha
+    palisade = qualified_alpha(cp, marked_only=True) and native.safetyParam == 0x2014
+    return native if (len(owners) == 1 and (gm or palisade or not native.pandaInventory[owners[0]].controlsAllowed and
                       not sm['pandaStates'][owners[0]].controlsAllowed)) else None
 
   def _temporary_host_intent_current(self, sm, cp, cs, axis, stamp, now_ns, *, latched, producer):

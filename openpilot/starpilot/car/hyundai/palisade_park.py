@@ -5,7 +5,7 @@ import math
 from opendbc.car.structs import car
 from opendbc.car.hyundai.values import CAR
 from openpilot.cereal import log
-from openpilot.starpilot.car.hyundai.aol import qualified_blended_stock
+from openpilot.starpilot.car.hyundai.aol import qualified_blended_stock, qualified_blended_alpha
 
 
 def cold_park_readiness(cp, cs, native, events):
@@ -16,8 +16,8 @@ def cold_park_readiness(cp, cs, native, events):
   """
   return bool(
     cp.carFingerprint == CAR.HYUNDAI_PALISADE_2023
-    and qualified_blended_stock(cp, marked_only=True)
-    and cp.safetyConfigs[0].safetyParam == 0x2010
+    and (qualified_blended_stock(cp, marked_only=True) and cp.safetyConfigs[0].safetyParam == 0x2010
+         or qualified_blended_alpha(cp, marked_only=True) and cp.safetyConfigs[0].safetyParam == 0x2014)
     and cs.gearShifter == car.CarState.GearShifter.park
     and cs.standstill
     and math.isfinite(cs.vEgo)

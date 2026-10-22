@@ -163,12 +163,16 @@ def test_parked_selection_feedback_does_not_revoke_latch():
   assert not a.desiredLateral and not a.lateralActive and not native.lateralAllowed
 
 
-def test_actual_selfdrived_publishes_idle_proof_for_palisade_park():
+@pytest.mark.parametrize('alpha', [False, True])
+def test_actual_selfdrived_publishes_idle_proof_for_palisade_park(alpha):
   from openpilot.common.prefix import OpenpilotPrefix
   from openpilot.starpilot.aol.tests.test_ioniq_availability import IoniqAvailabilityTests
   from openpilot.starpilot.aol.wire import encode_intent
 
   cp, cs, _, _, _, _ = fixture()
+  if alpha:
+    cp.openpilotLongitudinalControl, cp.pcmCruise = True, False
+    cp.safetyConfigs[0].safetyParam = 0x2014
   case = IoniqAvailabilityTests(methodName='runTest')
   with OpenpilotPrefix():
     try:

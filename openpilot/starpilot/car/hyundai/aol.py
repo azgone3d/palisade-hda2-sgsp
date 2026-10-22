@@ -99,7 +99,8 @@ def _policy_for(CP) -> AolVehiclePolicy:
     return AolVehiclePolicy(intent_supported=True, settings_supported=True, runtime_supported=True,
                             normal_runtime_supported=True, ordinary_axis_ack_required=qualified_blended_alpha(CP, marked_only=True),
                             full_axis_runtime_required=qualified_blended_alpha(CP, marked_only=True),
-                            explicit_latch=True, alternative_experience_addition=32)
+                            explicit_latch=True, alternative_experience_addition=32,
+                            cruise_main_required=CP.safetyConfigs[0].safetyParam != 0x2014)
   if qualified_blended_stock(CP):
     return AolVehiclePolicy(intent_supported=True, settings_supported=True, runtime_supported=True,
                             normal_runtime_supported=True, explicit_latch=True, alternative_experience_addition=32,
@@ -306,9 +307,10 @@ def independent_cruise_buttons_supported(CP, *, marked_only=False) -> bool:
   # Dedicated EV6 LONG raw-button/optional-release behavior stays unchanged.
   if CP.carFingerprint == HyundaiCAR.KIA_EV6 and CP.openpilotLongitudinalControl:
     return False
-  # Palisade HDA2 keeps the existing mixed-CAN stock native owner and word.
+  # Palisade HDA2 keeps its existing exact mixed-CAN native owner and word.
   # This selects mapped host gestures; it grants no native steering authority.
-  return bool((qualified_blended_stock(CP, marked_only=marked_only) and
+  return bool(((qualified_blended_stock(CP, marked_only=marked_only) or
+                qualified_blended_alpha(CP, marked_only=marked_only)) and
                CP.flags & HyundaiFlags.CANFD_LKA_STEER_MSG) or
               qualified_sonata_independent(CP) or
               qualified_angle_aol(CP, marked_only=marked_only) or

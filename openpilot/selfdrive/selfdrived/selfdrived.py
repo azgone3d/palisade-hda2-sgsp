@@ -1719,6 +1719,7 @@ class SelfdriveD:
       return False
     from openpilot.starpilot.car.gm.aol import native_accepts_cp as gm_native_accepts_cp
     from openpilot.starpilot.car.toyota.aol import qualified as toyota_aol_qualified
+    from opendbc.car.hyundai.blended_stock_aol import qualified_alpha as palisade_alpha_qualified
     # Pandad reads health before its final native permission read. A GM driver
     # withdrawal between those reads legitimately leaves the earlier health
     # controlsAllowed true. For an admitted OP-long GM profile, the current
@@ -1728,8 +1729,12 @@ class SelfdriveD:
     # of controls_allowed. Health and that mask may precede the parsed pedal
     # edge: honor LONG withdrawal while the existing native LAT grant stands.
     # The exact Toyota policy and all proof/health checks above remain required.
+    # Palisade HDA2's native brake gate can likewise precede the 100 Hz parsed
+    # pedal and 10 Hz health message. Only its exact alpha profile and existing
+    # current LAT grant qualify; this never restores LONG permission.
     return bool(gm_native_accepts_cp(self.CP, native.safetyModel, native.safetyParam) or
                 toyota_aol_qualified(self.CP, marked_only=True) or
+                palisade_alpha_qualified(self.CP, marked_only=True) and native.safetyParam == 0x2014 or
                 not native.pandaInventory[owners[0]].controlsAllowed and
                 not self.sm['pandaStates'][owners[0]].controlsAllowed)
 

@@ -4,8 +4,10 @@ from openpilot.starpilot.aol.intent import AolCardIntent
 
 class ClassicLongCardIntent(AolCardIntent):
   def __init__(self, cp, settings):
+    from openpilot.starpilot.car.hyundai.aol import independent_cruise_buttons_supported
     super().__init__(settings, explicit_latch=True, independent_cruise_buttons=(
-      independent_buttons_qualified(cp, marked_only=False) and settings.lkas_action == 9 and settings.main_action == 0))
+      (independent_buttons_qualified(cp, marked_only=False) or independent_cruise_buttons_supported(cp)) and
+      settings.lkas_action == 9 and settings.main_action == 0))
     self.requires_fault_observation = True
     self.observe_stock_engagement = True
 
