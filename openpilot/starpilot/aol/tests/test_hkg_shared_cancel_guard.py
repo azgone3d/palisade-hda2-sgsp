@@ -28,13 +28,14 @@ class Messages(dict):
   pass
 
 
-def captured_context():
+def captured_context(cp=None):
   # Original bounded root observer: now11.60, oldFULL11.59/deadline11.62;
   # cached acceptedFULL11.58/deadline11.61; nativeLATtrue/LONGfalse/current11.60.
   now = 11_600_000_000
-  cp = candidate(params(CAR.HYUNDAI_IONIQ_5), requested=True, is_release=False)
-  cp.safetyConfigs[0].safetyParam |= 0x800
-  cp.alternativeExperience = 32
+  if cp is None:
+    cp = candidate(params(CAR.HYUNDAI_IONIQ_5), requested=True, is_release=False)
+    cp.safetyConfigs[0].safetyParam |= 0x800
+    cp.alternativeExperience = 32
   settings = AolSettings(True, 0.0, 9, 0, (0, 0, 0), (0, 0, 0))
   owner = NS(
     explicit_latch=True,
@@ -150,8 +151,10 @@ def captured_context():
     'no_physical_cancel',
   ],
 )
-def test_shared_cancel_retains_only_original_current_reason_qualified_intent(case):
-  cp, cs, sm, feedback, owner, native, now = captured_context()
+@pytest.mark.parametrize('profile', ['canfd', 'palisade'])
+def test_shared_cancel_retains_only_original_current_reason_qualified_intent(case, profile):
+  from openpilot.starpilot.aol.tests.test_palisade_alpha_controls import alpha_params
+  cp, cs, sm, feedback, owner, native, now = captured_context(alpha_params() if profile == 'palisade' else None)
   source = now
   if case == 'settings_off':
     owner.settings = replace(owner.settings, enabled=False)

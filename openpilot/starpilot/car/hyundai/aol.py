@@ -351,6 +351,33 @@ def physical_cancel_lateral_allowed(CP, CS, intent, native, *, settings, previou
     return False
 
 
+def palisade_cancel_source(CI, CS, observation, now_ns):
+  """Current raw HDA2 alpha CANCEL, using receipt time without renewing it."""
+  from opendbc.car import Bus
+  from opendbc.car.hyundai.values import Buttons
+  try:
+    if (not qualified_blended_alpha(CI.CP, marked_only=True) or CI.CP.safetyConfigs[0].safetyParam != 0x2014 or
+        observation is None or observation[0] is not CS or not CS.canValid or CS.canTimeout or
+        not any(e.type == car.CarState.ButtonEvent.Type.cancel and e.pressed for e in CS.buttonEvents)):
+      return 0
+    _, received_ns, can_source_ns, boot_ns = observation
+    parser = CI.can_parsers[Bus.pt]
+    source = parser.message_states.get(parser.dbc.name_to_msg['CLU11'].address)
+    if source is None or not source.timestamps:
+      return 0
+    stamp = source.timestamps[-1]
+    if (not 0 < received_ns <= now_ns or now_ns - received_ns > 30_000_000 or
+        not 0 < stamp <= can_source_ns <= boot_ns or
+        boot_ns - stamp > min(source.timeout_threshold, 30_000_000) or
+        can_source_ns - stamp > min(source.timeout_threshold, 30_000_000) or
+        not CI.CS.blended_cancel_sources_current(parser, cancel=False) or
+        not any(value == Buttons.CANCEL for value in parser.vl_all['CLU11']['CF_Clu_CruiseSwState'])):
+      return 0
+    return received_ns
+  except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
+    return 0
+
+
 def retained_shared_long_cancel_intent(CP, CS, sm, feedback, owner, *, cancel_source_ns, now_ns, producer):
   """Keep existing mapped intent for one current physical CANCEL/FULL-proof join.
 
@@ -363,6 +390,7 @@ def retained_shared_long_cancel_intent(CP, CS, sm, feedback, owner, *, cancel_so
   from openpilot.starpilot.aol.transport_pause import cp_identity, independent_lateral_health
   try:
     if (not (qualified_sonata_independent(CP) or
+             qualified_blended_alpha(CP, marked_only=True) and CP.safetyConfigs[0].safetyParam == 0x2014 or
              CP.carFingerprint in LONG_EV_CARS and qualified_canfd_long(CP, marked_only=True)) or
         owner is None or not owner.explicit_latch or not owner.independent_cruise_buttons or
         not owner.allowed_latch or owner.pause_lateral or owner.pause_longitudinal or owner._fault_inhibit):

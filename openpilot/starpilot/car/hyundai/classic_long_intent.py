@@ -10,7 +10,9 @@ class ClassicLongCardIntent(AolCardIntent):
       settings.lkas_action == 9 and settings.main_action == 0))
     self.requires_fault_observation = True
     from opendbc.car.hyundai.blended_stock_aol import qualified_alpha
-    self.cancel_disarms_lateral = qualified_alpha(cp) and cp.safetyConfigs[0].safetyParam == 0x2014
+    # Only the marked HDA2 owner retains an existing native LAT grant on pause.
+    self.cancel_disarms_lateral = (qualified_alpha(cp) and cp.safetyConfigs[0].safetyParam == 0x2014 and
+                                   cp.alternativeExperience != 32)
     self.observe_stock_engagement = True
 
   def _arm_from_full_engagement(self, CS, *, source_ns):

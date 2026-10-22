@@ -1,6 +1,7 @@
-"""Palisade native Cancel parity and unchanged absolute output deadlines."""
+"""Palisade physical pause and unchanged absolute output deadlines."""
 
 from unittest.mock import patch
+from types import SimpleNamespace
 
 import pytest
 from opendbc.car import structs as car
@@ -14,7 +15,7 @@ from openpilot.starpilot.car.hyundai.aol import create_intent
 
 
 @pytest.mark.parametrize('full_op', [False, True])
-def test_cancel_withdraws_intent_before_native_refusal_without_false_mismatch(full_op):
+def test_cancel_retains_existing_lateral_without_resuming_long_or_false_mismatch(full_op):
   cp = alpha_params()
   settings = AolSettings(True, 0.0, 9, 0, (0, 0, 0), (0, 0, 0))
   owner = create_intent(cp, settings)
@@ -34,20 +35,53 @@ def test_cancel_withdraws_intent_before_native_refusal_without_false_mismatch(fu
         assert axis.lateralActive and command.latActive
       cs.buttonEvents = [car.CarState.ButtonEvent(type='cancel', pressed=True)]
       owner.update(cs, now_ns=10_050_000_000, fault_active=False)
-      assert not owner.allowed_latch and owner.latch_clear_reason == 'cancel_press'
+      assert owner.allowed_latch
       msg = messaging.new_message('carState', valid=True, logMonoTime=10_050_000_000)
       msg.carState = cs
-      axis, _, command = step(5, car_state_message=msg, latched=False, allowed=False, long_allowed=False, panda_controls_allowed=False)
+      axis, _, command = step(5, car_state_message=msg, latched=True, allowed=True, long_allowed=False, panda_controls_allowed=False)
       assert str(axis.faultReason) == 'none'
       assert not sd.aol_authority_lost
-      assert not command.latActive and not command.longActive
-      assert not axis.desiredLateral and not axis.desiredLongitudinal
+      assert command.latActive and not command.longActive
+      assert axis.desiredLateral and not axis.longitudinalActive
       assert fixture.log.OnroadEvent.EventName.controlsMismatch not in sd.events.names
       cs.buttonEvents = [car.CarState.ButtonEvent(type='cancel', pressed=False)]
       owner.update(cs, now_ns=10_060_000_000, fault_active=False)
-      assert not owner.allowed_latch  # Release cannot invent another LAT token.
+      assert owner.allowed_latch  # Release preserves intent; native still owns each axis.
     finally:
       case.doCleanups()
+
+
+def test_cancel_press_release_cannot_arm_unselected_lateral():
+  owner = create_intent(alpha_params(), AolSettings(True, 0., 9, 0, (0, 0, 0), (0, 0, 0)))
+  cs = car.CarState(canValid=True, gearShifter='drive')
+  for tick, event in enumerate([[], [car.CarState.ButtonEvent(type='cancel', pressed=True)],
+                              [car.CarState.ButtonEvent(type='cancel', pressed=False)], []]):
+    cs.buttonEvents = event
+    owner.update(cs, now_ns=tick + 1, fault_active=False)
+    assert not owner.allowed_latch
+
+
+@pytest.mark.parametrize('failure', ['none', 'old_receipt', 'future_receipt', 'wrong_bus', 'synthetic', 'unmarked'])
+def test_cancel_source_requires_actual_current_palisade_can(failure):
+  from opendbc.car.hyundai.interface import CarInterface
+  from opendbc.car.hyundai.tests.test_blended_stock_aol import MixedReceiveStream
+  from openpilot.selfdrive.car.card import Car
+  cp = alpha_params()
+  if failure == 'unmarked':
+    cp.alternativeExperience = 0
+  ci = CarInterface(cp)
+  stream = MixedReceiveStream(ci)
+  for tick in range(29):
+    now = stream.now + tick * 10_000_000
+    frames = stream.frames(tick, cruise_button=4 if tick == 28 and failure != 'synthetic' else 0)
+    if tick == 28 and failure == 'wrong_bus':
+      frames = [(address, data, 2 if address == 0x4F1 else bus) for address, data, bus in frames]
+    cs = ci.update([(now, frames)])
+  if failure in ('synthetic', 'wrong_bus'):
+    cs.buttonEvents = [car.CarState.ButtonEvent(type='cancel', pressed=True)]
+  receipt = now - 30_000_001 if failure == 'old_receipt' else now + 1 if failure == 'future_receipt' else now
+  caller = SimpleNamespace(CI=ci, _aol_can_observation=(cs, receipt, now, now))
+  assert Car.aol_cancel_source(caller, cs, now) == (now if failure == 'none' else 0)
 
 
 @pytest.mark.parametrize('successor', ['before', 'after', 'absent'])

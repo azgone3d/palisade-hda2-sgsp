@@ -781,6 +781,11 @@ class Car:
 
   def aol_cancel_source(self, CS, now_ns: int) -> int:
     """Bind Cancel to this parsed CAN batch and its local monotonic receipt."""
+    from openpilot.starpilot.car.hyundai.aol import palisade_cancel_source
+    palisade_source = palisade_cancel_source(getattr(self, 'CI', None), CS,
+      getattr(self, '_aol_can_observation', None), now_ns)
+    if palisade_source:
+      return palisade_source
     from opendbc.car.hyundai.values import Buttons
     state = getattr(getattr(self, 'CI', None), 'CS', None)
     observation = getattr(self, '_aol_can_observation', None)

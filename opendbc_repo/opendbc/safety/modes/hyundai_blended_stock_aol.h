@@ -144,7 +144,21 @@ static void blended_aol_rx(const CANPacket_t *msg) {
     bool pressed = false;
     if ((msg->bus == pt) && (msg->addr == 0x4F1U) && (GET_LEN(msg) == 4U)) {
       if ((msg->data[0] & 7U) == 4U) {
-        blended_aol_clear();
+        // Exact alpha HDA2: CANCEL withdraws longitudinal in hyundai_rx_hook.
+        // Retain only a previously claimed, still-current lateral session.
+        // Do not mint/refresh a token or use CANCEL as a lateral enable edge.
+        const bool retain_lateral = blended_aol_hda2 && blended_aol_long &&
+          blended_aol_token && blended_aol_claimed && blended_aol_session &&
+          heartbeat_engaged && blended_aol_request_seen && ((aol_host_axis_mask & 1U) != 0U) &&
+          (safety_get_ts_elapsed(now, aol_host_request_ts) <= AOL_HOST_REQUEST_TIMEOUT_US) &&
+          (blended_aol_token_source < 3U) &&
+          (safety_get_ts_elapsed(now, blended_aol_source_ts[blended_aol_token_source]) <= 300000U) &&
+          blended_aol_main_seen && blended_aol_main &&
+          (safety_get_ts_elapsed(now, blended_aol_main_ts) <= 100000U) &&
+          !relay_malfunction && !safety_rx_checks_invalid && aol_rx_healthy();
+        if (!retain_lateral) {
+          blended_aol_clear();
+        }
       }
       source = 0U;
       pressed = GET_BIT(msg, 3U);
