@@ -83,7 +83,8 @@ def test_complete_lkas_pulse_in_one_update_is_observed_once(consumed):
   assert owner.allowed_latch == (not consumed)
 
 
-def test_native_main_and_brake_keep_previously_authorized_stock_lateral():
+@pytest.mark.parametrize('initial_main', [False, True])
+def test_native_main_and_brake_keep_previously_authorized_stock_lateral(initial_main):
   cp, owner, _ = owner_and_state()
   ci = CarInterface(cp)
   stream = MixedReceiveStream(ci)
@@ -93,7 +94,7 @@ def test_native_main_and_brake_keep_previously_authorized_stock_lateral():
   safety.init_tests()
   for tick in range(80):
     now = stream.now + tick * 10_000_000
-    frames = stream.frames(tick, lda=20 <= tick < 30, main=40 <= tick < 44, stock_main=tick < 40)
+    frames = stream.frames(tick, lda=20 <= tick < 30, main=40 <= tick < 44, stock_main=initial_main and tick < 40)
     if tick >= 50:
       frames = [(addr, stream.packer.make_can_msg('TCS13', bus, {
         'AliveCounterTCS': (data[1] >> 5) & 7, 'DriverOverride': 2, 'ACCEnable': 0,

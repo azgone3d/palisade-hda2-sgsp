@@ -102,7 +102,8 @@ def _policy_for(CP) -> AolVehiclePolicy:
                             explicit_latch=True, alternative_experience_addition=32)
   if qualified_blended_stock(CP):
     return AolVehiclePolicy(intent_supported=True, settings_supported=True, runtime_supported=True,
-                            normal_runtime_supported=True, explicit_latch=True, alternative_experience_addition=32)
+                            normal_runtime_supported=True, explicit_latch=True, alternative_experience_addition=32,
+                            cruise_main_required=CP.safetyConfigs[0].safetyParam != 0x2010)
   if qualified_angle_aol(CP):
     return AolVehiclePolicy(
       intent_supported=True,
