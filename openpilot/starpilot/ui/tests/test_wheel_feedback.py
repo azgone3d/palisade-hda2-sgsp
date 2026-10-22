@@ -41,6 +41,24 @@ def required_change(row):
 
 
 class WheelFeedbackTests(unittest.TestCase):
+  def test_actual_experimental_mode_selects_its_icon_without_rotating_it(self):
+    state = OnroadState(True, True, 10, None, SpeedLimitObservation(), lateral_active=True, steering_angle_deg=45.)
+    large = SteeringWheelWidget(Path('/unused'))
+    large._texture, large._experimental_texture = Mock(), Mock()
+    compact = CompactHudRenderer(Mock(), Path('/unused'))
+    compact._wheel, compact._experimental_wheel = Mock(), Mock()
+    with patch.object(rl, 'draw_circle'), patch.object(rl, 'draw_texture_pro') as draw:
+      for widget, normal, experimental in ((large, large._texture, large._experimental_texture),
+                                            (compact, compact._wheel, compact._experimental_wheel)):
+        for enabled in (False, True, False):
+          sample = replace(state, experimental_enabled=enabled)
+          if widget is large:
+            widget.render(rl.Rectangle(30, 30, 1800, 1020), sample)
+          else:
+            widget.render_steering_wheel(sample)
+          self.assertIs(draw.call_args.args[0], experimental if enabled else normal)
+          self.assertEqual(draw.call_args.args[4], 0. if enabled else -45.)
+
   def test_angle_uses_current_measured_car_state(self):
     ui = ui_fake()
     vars(ui.sm.messages['carState']).update(vars(car(steeringAngleDeg=45.)))

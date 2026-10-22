@@ -96,6 +96,7 @@ class CompactHudRenderer:
     self.fonts = fonts
     self.asset_directory = asset_directory
     self._wheel: rl.Texture | None = None
+    self._experimental_wheel: rl.Texture | None = None
     self._feedback = WheelFeedbackFade()
     self._speed_limit_pulse = SpeedLimitPulse()
     self._set_speed_alpha = FirstOrderFilter(0.0, 0.1, 1 / 60)
@@ -107,12 +108,13 @@ class CompactHudRenderer:
     self._set_speed_changed_ns: int | None = None
     self._cruise_drive_frame: int | None = None
 
-  def prepare(self) -> None:
-    if self._wheel is not None:
+  def prepare(self, *, experimental: bool = False) -> None:
+    if (self._experimental_wheel if experimental else self._wheel) is not None:
       return
-    path = self.asset_directory / "icons_mici/wheel.png"
+    filename = 'icons_mici/experimental_mode.png' if experimental else 'icons_mici/wheel.png'
+    path = self.asset_directory / filename
     entry = next(item for item in json.loads(Path(__file__).with_name("onroad-assets.json").read_text())["files"]
-                 if item["file"] == "icons_mici/wheel.png")
+                 if item["file"] == filename)
     data = path.read_bytes()
     if len(data) != entry["bytes"] or hashlib.sha256(data).hexdigest() != entry["sha256"]:
       raise ValueError("Unreviewed compact wheel art")
@@ -121,9 +123,13 @@ class CompactHudRenderer:
       if image.data == rl.ffi.NULL:
         raise RuntimeError("Unable to load compact wheel art")
       rl.image_resize(image, 50, 50)
-      self._wheel = rl.load_texture_from_image(image)
-      if not self._wheel.id:
+      texture = rl.load_texture_from_image(image)
+      if not texture.id:
         raise RuntimeError("Unable to create compact wheel texture")
+      if experimental:
+        self._experimental_wheel = texture
+      else:
+        self._wheel = texture
     finally:
       if image.data != rl.ffi.NULL:
         rl.unload_image(image)
@@ -162,17 +168,22 @@ class CompactHudRenderer:
     wx, wy = widget_offset(state.customization, "compact", "steering_wheel")
     if (state.alert.size == AlertSize.NONE and wheel_alpha > 1 and
         placement(state.customization, "compact", "steering_wheel")["enabled"]):
-      self.prepare()
+      self.prepare(experimental=state.experimental_enabled)
       size, _ = widget_size(state.customization, "compact", "steering_wheel")
-      rl.draw_texture_pro(self._wheel, rl.Rectangle(0, 0, 50, 50),
+      texture = self._experimental_wheel if state.experimental_enabled else self._wheel
+      rl.draw_texture_pro(texture, rl.Rectangle(0, 0, 50, 50),
                           rl.Rectangle(21 + wx + size / 2, 176 + wy + size / 2 + wheel_y, size, size),
-                          rl.Vector2(size / 2, size / 2), wheel_rotation(state.steering_angle_deg),
+                          rl.Vector2(size / 2, size / 2),
+                          0.0 if state.experimental_enabled else wheel_rotation(state.steering_angle_deg),
                           rl.Color(*color, int(wheel_alpha)))
 
   def close(self) -> None:
     if self._wheel is not None and rl.is_window_ready():
       rl.unload_texture(self._wheel)
+    if self._experimental_wheel is not None and rl.is_window_ready():
+      rl.unload_texture(self._experimental_wheel)
     self._wheel = None
+    self._experimental_wheel = None
 
   def _set_speed_opacity(self, state: OnroadState, now_ns: int) -> float:
     if state.drive_frame != self._cruise_drive_frame:

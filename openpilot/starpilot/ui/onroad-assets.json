@@ -16,6 +16,16 @@
       "file": "icons_mici/onroad/onroad_fade.png",
       "bytes": 38317,
       "sha256": "2aa6d04ba038f15a92868de6e6c7b04f624b4fe89d03bc3e9c4cd44cb729b24e"
+    },
+    {
+      "file": "icons/experimental.png",
+      "bytes": 34953,
+      "sha256": "1e58deb1778cf2826339f27e9f09eecc79ea137c1436210c14b71c352a649c77"
+    },
+    {
+      "file": "icons_mici/experimental_mode.png",
+      "bytes": 16243,
+      "sha256": "01841b602632c66ab14a8e52b874a1623f09641dc2ef0620f4e2d00bb4a913f3"
     }
   ]
 }

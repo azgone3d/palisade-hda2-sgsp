@@ -15,10 +15,15 @@ from openpilot.starpilot.car.hyundai.aol import create_intent
 
 
 @pytest.mark.parametrize('full_op', [False, True])
-def test_cancel_retains_existing_lateral_without_resuming_long_or_false_mismatch(full_op):
+@pytest.mark.parametrize('startup_experience', [0, 32])
+def test_cancel_retains_existing_lateral_without_resuming_long_or_false_mismatch(full_op, startup_experience):
   cp = alpha_params()
+  cp.alternativeExperience = startup_experience
   settings = AolSettings(True, 0.0, 9, 0, (0, 0, 0), (0, 0, 0))
   owner = create_intent(cp, settings)
+  # This is Card's real order: construct intent, then finalize CP's AOL marker.
+  cp.alternativeExperience = 32
+  assert not owner.cancel_disarms_lateral
   cs = car.CarState(canValid=True, gearShifter='drive', vEgo=10.0)
   cs.cruiseState.available = True
   owner.update(cs, now_ns=1, fault_active=False)

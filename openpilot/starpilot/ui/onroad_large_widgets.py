@@ -248,13 +248,16 @@ class SteeringWheelWidget:
   def __init__(self, asset_directory: Path):
     self.asset_directory = asset_directory
     self._texture: rl.Texture | None = None
+    self._experimental_texture: rl.Texture | None = None
     self._feedback = WheelFeedbackFade()
 
-  def prepare(self) -> None:
-    if self._texture is not None:
+  def prepare(self, *, experimental: bool = False) -> None:
+    if (self._experimental_texture if experimental else self._texture) is not None:
       return
-    path = self.asset_directory / "icons/chffr_wheel.png"
-    entry = json.loads(Path(__file__).with_name("onroad-assets.json").read_text())["files"][0]
+    filename = 'icons/experimental.png' if experimental else 'icons/chffr_wheel.png'
+    path = self.asset_directory / filename
+    entry = next(item for item in json.loads(Path(__file__).with_name("onroad-assets.json").read_text())["files"]
+                 if item['file'] == filename)
     data = path.read_bytes()
     if len(data) != entry["bytes"] or hashlib.sha256(data).hexdigest() != entry["sha256"]:
       raise ValueError("Unreviewed steering wheel art")
@@ -266,14 +269,16 @@ class SteeringWheelWidget:
       texture = rl.load_texture_from_image(image)
       if not texture.id:
         raise RuntimeError("Unable to create steering wheel texture")
-      self._texture = texture
+      if experimental:
+        self._experimental_texture = texture
+      else:
+        self._texture = texture
     finally:
       if image.data != rl.ffi.NULL:
         rl.unload_image(image)
 
   def render(self, content: rl.Rectangle, state: OnroadState) -> None:
-    if self._texture is None:
-      self.prepare()
+    self.prepare(experimental=state.experimental_enabled)
     dx, dy = offset(state.customization, "large", "steering_wheel")
     x = content.x + content.width - 146 - 96 + dx
     y = content.y + 45 + dy
@@ -285,11 +290,16 @@ class SteeringWheelWidget:
       rl.draw_ring(rl.Vector2(x + radius, y + radius), radius - 3, radius, 0, 360, 64, border)
     feedback = self._feedback.update(state.wheel_acceleration, state.appearance.wheel_pedal_feedback, state.observed_ns, state.drive_frame)
     color = rl.Color(*feedback, 255)
-    rl.draw_texture_pro(self._texture, rl.Rectangle(0, 0, 144, 144),
+    texture = self._experimental_texture if state.experimental_enabled else self._texture
+    rl.draw_texture_pro(texture, rl.Rectangle(0, 0, 144, 144),
                         rl.Rectangle(x + radius, y + radius, size * .75, size * .75),
-                        rl.Vector2(size * .375, size * .375), wheel_rotation(state.steering_angle_deg), color)
+                        rl.Vector2(size * .375, size * .375),
+                        0.0 if state.experimental_enabled else wheel_rotation(state.steering_angle_deg), color)
 
   def close(self) -> None:
     if self._texture is not None and rl.is_window_ready():
       rl.unload_texture(self._texture)
+    if self._experimental_texture is not None and rl.is_window_ready():
+      rl.unload_texture(self._experimental_texture)
     self._texture = None
+    self._experimental_texture = None
