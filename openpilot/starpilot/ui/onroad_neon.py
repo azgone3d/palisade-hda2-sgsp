@@ -67,11 +67,11 @@ def frame_glow(rect, state, *, roundness=.15):
     rl.draw_rectangle_rounded_lines_ex(rect, roundness, 10, width, rl.Color(color.r, color.g, color.b, alpha))
 
 
-def circle_glow(center, radius, state):
+def circle_glow(center, radius, state, *, subtle=False):
   color = decoration_color(state)
   if color is None:
     return
-  for width, alpha in ((10, 20), (5, 44), (1, 90)):
+  for width, alpha in (((3, 12), (1, 22)) if subtle else ((10, 20), (5, 44), (1, 90))):
     rl.draw_ring(center, radius, radius + width, 0, 360, 48, rl.Color(color.r, color.g, color.b, alpha))
 
 

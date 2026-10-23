@@ -175,6 +175,31 @@ def test_mini_is_opt_in_and_migrates_missing_saved_placement():
   assert not upgraded['layouts']['large'][TELEMETRY_WHEEL_WIDGET]['enabled']
 
 
+def test_neon_arcs_are_readable_and_original_wheel_has_steady_mode_tint():
+  sample = replace(state(), camera_available=True, lateral_active=True, longitudinal_active=False)
+  sample.customization['statusStyle'] = 'neon'
+  sample.customization['layouts']['large'][TELEMETRY_WHEEL_WIDGET]['enabled'] = True
+  widget = TelemetryOverlay(Mock(), '/unused')
+  widget.wheel._texture = object()
+  with patch.object(widget.wheel, 'prepare'), \
+       patch('openpilot.starpilot.ui.onroad_telemetry.rl.draw_ring') as rings, \
+       patch('openpilot.starpilot.ui.onroad_telemetry.rl.draw_texture_pro') as texture:
+    widget.render(sample, mini=True)
+    calls = rings.call_args_list
+    assert len(calls) == 10  # Four tracks, four readings, two subtle static halos.
+    for i in range(4):
+      assert calls[2*i+1].args[2] - calls[2*i+1].args[1] == pytest.approx(5.44)
+    assert [tuple(getattr(calls[2*i+1].args[-1], c) for c in 'rgb') for i in range(4)] == [
+      (0,140,255), (0,255,128), (128,0,255), (255,128,0)]
+    assert texture.call_args.args[0] is widget.wheel._texture
+    assert tuple(getattr(texture.call_args.args[-1], c) for c in 'rgb') == (0,140,255)
+    assert max(call.args[-1].a for call in calls[-2:]) <= 22
+    before = [(call.args[1], call.args[2], call.args[-1].a) for call in calls[-2:]]
+    rings.reset_mock()
+    widget.render(replace(sample, observed_ns=sample.observed_ns+1_000_000_000), mini=True)
+    assert [(call.args[1], call.args[2], call.args[-1].a) for call in rings.call_args_list[-2:]] == before
+
+
 @pytest.mark.parametrize('experimental', [False, True])
 def test_mini_switches_icon_and_rotates_both_modes(experimental):
   widget = TelemetryOverlay(Mock(), '/unused')
