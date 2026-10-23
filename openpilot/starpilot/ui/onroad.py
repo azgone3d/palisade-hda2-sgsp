@@ -321,7 +321,7 @@ class OnroadView:
         speed_content = rl.Rectangle(content.x + (width - 1860) / 2, content.y, content.width, content.height)
         submit("current_speed", lambda: self.current_speed.render(speed_content, state))
       if state.alert.size == AlertSize.NONE:
-        if placement(state.customization, profile, "steering_wheel")["enabled"]:
+        if placement(state.customization, profile, "steering_wheel")["enabled"] and not placement(state.customization, profile, "telemetry_wheel")["enabled"]:
           submit("steering_wheel", lambda: self.steering_wheel.render(content, state))
         if placement(state.customization, profile, "torque_bar")["enabled"]:
           submit("torque_bar", lambda: self.torque_bar.render(content, state, width if self.projection_viewport else 2160))
@@ -395,7 +395,7 @@ class OnroadView:
           speed_content = rl.Rectangle(content.x + right_shift / 2, content.y, content.width, content.height)
           self.current_speed.render(speed_content, state)
         if state.alert.size == AlertSize.NONE:
-          if placement(state.customization, "large", "steering_wheel")["enabled"]:
+          if placement(state.customization, "large", "steering_wheel")["enabled"] and not placement(state.customization, "large", "telemetry_wheel")["enabled"]:
             self.steering_wheel.render(content, state)
           if placement(state.customization, "large", "torque_bar")["enabled"]:
             self.torque_bar.render(content, state, width if self.projection_viewport else 2160)

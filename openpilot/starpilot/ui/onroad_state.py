@@ -332,6 +332,12 @@ def compact_sign_obscured_by_actions(state: OnroadState) -> bool:
           sign["y"] < bottom and sign["y"] + sign_area["height"] > top)
 
 
+def _inside_experimental_wheel(x, y, state):
+  if placement(state.customization, Profile.LARGE, 'telemetry_wheel')['enabled']:
+    return state.alert.size == AlertSize.NONE and _inside_widget(x, y, state, 'telemetry_wheel', (1530, 310, 1770, 550))
+  return _inside_widget(x, y, state, 'steering_wheel', (1588, 75, 1780, 267))
+
+
 class OnroadInput:
   """The onroad wheel emits intent only; the supplied state must be refreshed."""
 
@@ -362,7 +368,7 @@ class OnroadInput:
     if self.profile != Profile.LARGE:
       self.cancel()
       return
-    inside = _inside_widget(x, y, state, "steering_wheel", (1588, 75, 1780, 267))
+    inside = _inside_experimental_wheel(x, y, state)
     self._press = (x, y, state.experimental_enabled, state.experimental_action_token) if inside and state.experimental_available else None
 
   def move(self, x: float, y: float, state: OnroadState) -> None:
@@ -375,7 +381,7 @@ class OnroadInput:
       return
     if self._press:
       px, py, previous, token = self._press
-      if (abs(x - px) > self.slop or abs(y - py) > self.slop or not (_inside_widget(x, y, state, "steering_wheel", (1588, 75, 1780, 267)))
+      if (abs(x - px) > self.slop or abs(y - py) > self.slop or not _inside_experimental_wheel(x, y, state)
           or previous != state.experimental_enabled or token != state.experimental_action_token or not state.experimental_available):
         self.cancel()
 

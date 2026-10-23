@@ -173,3 +173,39 @@ def test_mini_is_opt_in_and_migrates_missing_saved_placement():
   del document['layouts']['large'][TELEMETRY_WHEEL_WIDGET]
   upgraded = validate_document(document)
   assert not upgraded['layouts']['large'][TELEMETRY_WHEEL_WIDGET]['enabled']
+
+
+@pytest.mark.parametrize('experimental', [False, True])
+def test_mini_switches_icon_and_rotates_both_modes(experimental):
+  widget = TelemetryOverlay(Mock(), '/unused')
+  widget.wheel._texture = object()
+  widget.wheel._experimental_texture = object()
+  sample = replace(state(), experimental_enabled=experimental)
+  sample.customization['layouts']['large'][TELEMETRY_WHEEL_WIDGET]['enabled'] = True
+  with ExitStack() as stack:
+    prepare = stack.enter_context(patch.object(widget.wheel, 'prepare'))
+    for name in ('draw_rectangle_rec', 'draw_ring'):
+      stack.enter_context(patch('openpilot.starpilot.ui.onroad_telemetry.rl.' + name))
+    texture = stack.enter_context(patch('openpilot.starpilot.ui.onroad_telemetry.rl.draw_texture_pro'))
+    widget.render(sample, mini=True)
+  prepare.assert_called_once_with(experimental=experimental)
+  assert texture.call_args.args[0] is (widget.wheel._experimental_texture if experimental else widget.wheel._texture)
+  assert texture.call_args.args[-2] == -5.1
+
+
+def test_mini_tap_retains_token_binding_and_hidden_alert_cancels_touch():
+  from openpilot.starpilot.ui.onroad_state import OnroadInput
+  sample = replace(state(), experimental_available=True, experimental_action_token='displayed')
+  sample.customization['layouts']['large'][TELEMETRY_WHEEL_WIDGET].update(enabled=True, x=1400, y=75)
+  emit = Mock()
+  touch = OnroadInput(emit)
+  touch.press(1500, 175, sample)
+  touch.release(1500, 175, sample)
+  assert emit.call_args.args[0].value is True
+  emit.reset_mock()
+  touch.press(1500, 175, sample)
+  touch.release(1500, 175, replace(sample, experimental_action_token='changed'))
+  emit.assert_not_called()
+  touch.press(1500, 175, sample)
+  touch.release(1500, 175, replace(sample, alert=OnroadAlert(size=AlertSize.MID)))
+  emit.assert_not_called()

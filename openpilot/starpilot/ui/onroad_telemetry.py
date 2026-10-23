@@ -55,8 +55,9 @@ class TelemetryOverlay:
       if value is not None:
         angle = 270 + max(-1., min(1., value)) * 125
         rl.draw_ring(rl.Vector2(cx, cy), radius, radius + 4 * scale, min(270, angle), max(270, angle) + .15, 24, color)
-    self.wheel.prepare()
-    texture = self.wheel._texture
+    experimental = bool(mini and state.experimental_enabled)
+    self.wheel.prepare(experimental=experimental)
+    texture = self.wheel._experimental_texture if experimental else self.wheel._texture
     rl.draw_texture_pro(texture, rl.Rectangle(0, 0, 144, 144),
                         rl.Rectangle(cx, cy, 220 * scale, 220 * scale), rl.Vector2(110 * scale, 110 * scale),
                         wheel_rotation(observation.angle), WHITE if observation.angle is not None else MUTED)
