@@ -651,25 +651,13 @@ class TransportPauseFeedback:
     self.honda_brake_ns = source_ns
     return native
 
-  def _longitudinal_cancel_current(self, sm, cp, cs, axis, now_ns, *, latched, cancel_source_ns, withdrawal_required=True,
-                                 producer='') -> SafetyState | None:
+  def _longitudinal_cancel_current(self, sm, cp, cs, axis, now_ns, *, latched, cancel_source_ns, withdrawal_required=True) -> SafetyState | None:
     """Retain existing intent during Cancel's bounded LONG withdrawal handshake."""
     from opendbc.car.hyundai.ev6_aol import qualified
     from opendbc.car.structs import car
-    from opendbc.car.hyundai.blended_stock_aol import qualified_alpha
-    from opendbc.car.hyundai.values import CAR
-
-    palisade = (cp.carFingerprint == CAR.HYUNDAI_PALISADE_2023 and
-                qualified_alpha(cp, marked_only=True) and cp.safetyConfigs[0].safetyParam == 0x2014)
-    if palisade and (not producer or producer != self.availability_producer or
-        axis.intentProducerSessionId != producer or axis.intentIntegrityEpoch != self.availability_epoch or
-        cs.steeringDisengage or cs.doorOpen or cs.seatbeltUnlatched or cs.brakePressed or cs.gasPressed or
-        cs.gearShifter not in (car.CarState.GearShifter.drive, car.CarState.GearShifter.sport,
-                              car.CarState.GearShifter.low, car.CarState.GearShifter.brake)):
-      return None
 
     if (not latched or self.failed or self.paused or self.pending_event or
-        not self.session or str(axis.sessionId) != self.session or not (qualified(cp, marked_only=True) or palisade) or
+        not self.session or str(axis.sessionId) != self.session or not qualified(cp, marked_only=True) or
         not self.lateral_baseline_ns or not 0 <= now_ns - self.lateral_baseline_ns <= AXIS_MAX_AGE_NS or
         str(axis.faultReason) != 'none' or not axis.nativeAcknowledged or
         not axis.desiredLateral or not axis.lateralActive or cs.accFaulted or
@@ -689,30 +677,18 @@ class TransportPauseFeedback:
         not 0 < event_ns <= now_ns or now_ns - event_ns > 1_500_000_000 or
         any(e.immediateDisable or e.softDisable for e in sm['onroadEvents'])):
       return None
-    if palisade and any(e.userDisable and e.name != log.OnroadEvent.EventName.buttonCancel for e in sm['onroadEvents']):
-      return None
     native = current_native(sm, cp, now_ns=now_ns, axis_session_id=self.session)
     if (native is None or not native.pandaInventory or not native.requestedLateral or not native.lateralAllowed or
-        not native.requestedLongitudinal or withdrawal_required and native.longitudinalAllowed and not palisade or
+        not native.requestedLongitudinal or withdrawal_required and native.longitudinalAllowed or
         native.observedMonoTime < self.lateral_native_ns or
         not native_inventory_matches_cp(native, cp) or
         (native.pandaSerial, tuple(p.hardwareSerial for p in native.pandaInventory)) != self.lateral_inventory):
-      return None
-    if palisade and any(slot.safetyRxChecksInvalid or slot.heartbeatLost or blocking_fault_mask(slot.faults, cp)
-                        for slot in native.pandaInventory):
       return None
     stamp = int(sm.logMonoTime['pandaStates'])
     pandas = sm['pandaStates']
     if (not sm.seen['pandaStates'] or not sm.valid['pandaStates'] or not sm.alive['pandaStates'] or stamp <= 0 or
         len(pandas) != len(cp.safetyConfigs)):
       return None
-    if palisade and withdrawal_required and native.longitudinalAllowed:
-      # The raw Panda socket may report Cancel's LONG withdrawal before the
-      # coherent native wire arrives. Preserve only prior intent, anchored to
-      # the original physical press; never extend a native or output lease.
-      if (len(pandas) != 1 or stamp <= native.sourcePandaStatesMonoTime or pandas[0].controlsAllowed or
-          any(not slot.controlsAllowed for slot in native.pandaInventory)):
-        return None
     # controlsAllowed represents the withdrawn normal/LONG axis here. Preserve
     # every latest raw configuration/fault veto and exact producer-read inventory.
     current_pandas = all(int(p.safetyModel.raw) == int(c.safetyModel.raw) and p.safetyParam == c.safetyParam and
@@ -1234,7 +1210,7 @@ class TransportPauseFeedback:
         return False
       transport_healthy = native is not None
       cancel_native = (self._longitudinal_cancel_current(sm, cp, cs, axis, now_ns, latched=latched,
-                                                        cancel_source_ns=cancel_source_ns, producer=intent_producer_session)
+                                                        cancel_source_ns=cancel_source_ns)
                        if current and continuity and baseline and not transport_healthy else None)
       if self._event_first_retention(sm, cp, axis, stamp, now_ns, latched=latched,
           signature=signature, native=native):
@@ -1316,7 +1292,7 @@ class TransportPauseFeedback:
         # Remember a real physical occurrence before its native wire arrives.
         # Duplicate Card observations and held/released samples cannot renew it.
         cancel_pending = self._longitudinal_cancel_current(sm, cp, cs, axis, now_ns, latched=latched,
-          cancel_source_ns=cancel_source_ns, withdrawal_required=False, producer=intent_producer_session)
+          cancel_source_ns=cancel_source_ns, withdrawal_required=False)
         if cancel_pending is not None:
           self.longitudinal_cancel_ns = int(cancel_source_ns)
           self.last_cancel_source_ns = int(cancel_source_ns)
