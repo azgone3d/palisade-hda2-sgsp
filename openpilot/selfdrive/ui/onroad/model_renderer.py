@@ -177,8 +177,11 @@ class ModelRenderer(Widget):
     """Update positions of lead vehicles"""
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
     leads = [radar_state.leadOne, radar_state.leadTwo]
+    from openpilot.starpilot.ui.lead_markers import duplicate_vision_lead
 
     for i, lead_data in enumerate(leads):
+      if i == 1 and duplicate_vision_lead(leads[0], lead_data):
+        continue
       if lead_data and lead_data.present:
         d_rel, y_rel, v_rel = lead_data.dRel, lead_data.yRel, lead_data.vRel
         idx = self._get_path_length_idx(path_x_array, d_rel)

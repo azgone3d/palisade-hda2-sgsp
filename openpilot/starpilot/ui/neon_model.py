@@ -24,7 +24,7 @@ def draw_lane(rect, points, rgb, probability, draw_polygon):
   # At most two additional bounded polygons per lane; absent evidence draws none.
   if not np.isfinite(probability) or probability <= 0:
     return
-  for factor, alpha in ((3., 28), (1.8, 48)):
+  for factor, alpha in ((3., 40), (1.8, 64)):
     expanded = expanded_lane(points, factor)
     if expanded is not None:
       draw_polygon(rect, expanded, gradient=lane_gradient(tuple(rgb), int(min(.7, probability) * alpha)))
@@ -38,7 +38,7 @@ def draw_chevron(lead, rgb):
   if len(points) != 3 or not np.isfinite(points).all():
     return False
   right, tip, left = (rl.Vector2(*point) for point in points)
-  for width, alpha in ((18, 16), (11, 35), (6, 220)):
+  for width, alpha in ((18, 24), (11, 50), (6, 235)):
     color = rl.Color(*rgb, alpha)
     rl.draw_line_ex(left, tip, width, color)
     rl.draw_line_ex(tip, right, width, color)

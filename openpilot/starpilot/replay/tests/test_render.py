@@ -238,6 +238,29 @@ def test_camera_poll_precedes_message_snapshot():
   assert order == ['camera', 'messages']
 
 
+@pytest.mark.parametrize('draw_core', (Profile.LARGE,), indirect=True)
+@pytest.mark.parametrize('longitudinal', (False, True))
+@pytest.mark.parametrize('fresh,visible', ((True, True), (False, True), (True, False)))
+def test_large_replay_preserves_neon_and_lead_visibility(draw_core, longitudinal, fresh, visible):
+  from openpilot.starpilot.ui.tests.test_onroad_neon import state as neon_state
+  core = draw_core
+  core._primary_matches = Mock(return_value=True)
+  core._optional_placeholder_ready = Mock(return_value=False)
+  state = replace(neon_state(), longitudinal_active=longitudinal, lead_indicator_source_fresh=fresh)
+  state = replace(state, appearance=replace(state.appearance, show_lead_indicator=visible))
+  original = core.ui.sm.updated
+  core._camera_layer(Mock(), state)
+  kwargs = core.camera.render_camera_model_layer.call_args.kwargs
+  assert kwargs['lead_display'][0] is (fresh and visible)
+  assert kwargs['poll_camera'] is False
+  assert core.ui.sm.updated is original
+  if fresh:
+    assert kwargs['road_style']['_neonRgb'] == ((0, 255, 128) if longitudinal else (0, 140, 255))
+  else:
+    assert '_neonRgb' not in kwargs['road_style']
+  assert '_neonRgb' not in state.customization['roadColors']['large']
+
+
 @pytest.mark.parametrize('profile', ('onroad', 'mici.onroad'))
 def test_camera_paint_does_not_receive_or_switch_selected_frame(monkeypatch, profile):
   import importlib

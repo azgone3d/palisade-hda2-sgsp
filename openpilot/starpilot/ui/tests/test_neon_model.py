@@ -40,3 +40,19 @@ def test_model_decorations_require_fresh_sources_and_leave_saved_document_untouc
   s=replace(s,lead_indicator_source_fresh=True)
   assert onroad_neon.model_style(s,'large')['_neonRgb']==(0,140,255)
   assert '_neonRgb' not in s.customization['roadColors']['large']
+
+
+def test_projection_uses_shared_neon_style_and_hides_stale_leads():
+  from openpilot.starpilot.system.android_auto.projection_onroad import ProjectionOnroad
+  view = object.__new__(ProjectionOnroad)
+  view.camera = Mock(stream_type='road')
+  for fresh in (False, True):
+    s = replace(state(), lead_indicator_source_fresh=fresh)
+    s = replace(s, appearance=replace(s.appearance, show_lead_indicator=True))
+    view._camera_layer(None, s)
+    kwargs = view.camera.render_camera_model_layer.call_args.kwargs
+    assert kwargs['lead_display'][0] is fresh
+    assert ('_neonRgb' in kwargs['road_style']) is fresh
+    if fresh:
+      assert kwargs['road_style']['_neonRgb'] == (0, 140, 255)
+    assert view.camera_stream == 'road'

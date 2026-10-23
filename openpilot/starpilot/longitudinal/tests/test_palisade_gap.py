@@ -27,10 +27,11 @@ def radar(distance=30.0):
   return rr
 
 
-def test_actual_solver_matches_an_obstacle_1p5m_closer_without_changing_measured_lead():
+@pytest.mark.parametrize('extra_gap', [1.5, 2.0])
+def test_actual_solver_matches_closer_obstacle_without_changing_measured_lead(extra_gap):
   buffered, translated, normal = LongitudinalMpc(), LongitudinalMpc(), LongitudinalMpc()
   actual = radar()
-  for mpc, lead, buffer in [(buffered, actual, 1.5), (translated, radar(28.5), 0.0), (normal, actual, 0.0)]:
+  for mpc, lead, buffer in [(buffered, actual, extra_gap), (translated, radar(30.0-extra_gap), 0.0), (normal, actual, 0.0)]:
     mpc.set_cur_state(8.0, 0.0)
     mpc.set_weights()
     mpc.update(lead, lead_buffer_m=buffer)
@@ -38,7 +39,7 @@ def test_actual_solver_matches_an_obstacle_1p5m_closer_without_changing_measured
   np.testing.assert_allclose(buffered.a_solution, translated.a_solution, atol=1e-7)
   assert np.min(buffered.a_solution) <= np.min(normal.a_solution)
   assert actual.leadOne.dRel == 30.0
-  np.testing.assert_allclose(normal.params[:, 2] - buffered.params[:, 2], 1.5)
+  np.testing.assert_allclose(normal.params[:, 2] - buffered.params[:, 2], extra_gap)
 
 
 @pytest.mark.parametrize('invalid', [float('nan'), -1.0, 2.01])
@@ -65,8 +66,8 @@ def test_real_planner_receives_buffer_only_on_exact_active_profile():
   sm['radarState'].leadOne = radar().leadOne
   planner = LongitudinalPlanner(cp)
   planner.update(sm, now_ns=NOW, drive_id=DRIVE)
-  assert lead_buffer(cp, sm, NOW) == 1.5
-  assert planner.mpc.params[0, 2] == 28.5
+  assert lead_buffer(cp, sm, NOW) == 2.0
+  assert planner.mpc.params[0, 2] == 28.0
   sm['carControl'].longActive = False
   assert lead_buffer(cp, sm, NOW) == 0.0
   sm['carControl'].longActive = True
@@ -85,3 +86,9 @@ def test_speed_limit_ceiling_reaches_actual_palisade_planner():
   planner = LongitudinalPlanner(cp)
   planner.update(sm, now_ns=NOW, drive_id=DRIVE, cruise_ceiling=CruiseCeiling(15.0, authority))
   assert planner.last_cruise_ceiling_status == 'applied'
+
+
+def test_gap_change_is_restricted_to_palisade_fingerprint():
+  cp = alpha_params()
+  cp.carFingerprint = 'OTHER_CAR'
+  assert lead_buffer(cp, frame(), NOW) == 0.0

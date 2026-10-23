@@ -393,7 +393,10 @@ class Compositor:
                                          lateral_active=state.lateral_active, road_style=state.customization['roadColors']['compact'],
                                          poll_camera=False)
       else:
-        self.camera.render_camera_model_layer(rect, road_style=state.customization['roadColors']['large'], poll_camera=False)
+        from openpilot.starpilot.ui.onroad_neon import model_style
+        self.camera.render_camera_model_layer(rect, road_style=model_style(state, 'large'),
+          lead_display=(state.appearance.show_lead_indicator and state.lead_indicator_source_fresh,
+                        state.appearance.lead_info_mode, state.appearance.lead_info_metric), poll_camera=False)
     finally:
       sm.updated = original
     self.render_receipts.update({name: receipts[name] for name in flags.read if name in receipts})
