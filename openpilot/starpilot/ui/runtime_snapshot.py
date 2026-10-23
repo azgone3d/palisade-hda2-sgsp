@@ -650,7 +650,8 @@ class RuntimeSnapshotAdapter:
       parameters=display_message(sm, 'vehicleParameters', now_ns, after_frame=after) if started else None,
       metric=bool(ui.is_metric), cp=cp)
     telemetry = TelemetryObservation()
-    if started and placement(self._customization_value, 'large', 'telemetry_overlay')['enabled']:
+    if started and any(placement(self._customization_value, 'large', key)['enabled']
+                       for key in ('telemetry_overlay', 'telemetry_wheel')):
       telemetry = observe_telemetry(
         current_message(sm, 'carState', now_ns, after_frame=after),
         current_message(sm, 'carControl', now_ns, after_frame=after),

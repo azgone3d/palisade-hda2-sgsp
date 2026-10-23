@@ -161,10 +161,14 @@ PROFILES['large']['widgets'][CEM_GAUGE_WIDGET] = _widget('CEM road gauge', CEM_G
                                                          436 + CEM_GAUGE_INSET[0], 75 + CEM_GAUGE_INSET[1])
 # Older documents retain every saved placement and gain this independent widget.
 TELEMETRY_WIDGET = 'telemetry_overlay'
+TELEMETRY_WHEEL_WIDGET = 'telemetry_wheel'
 PROFILES['large']['widgets'][TELEMETRY_WIDGET] = _widget('Telemetry overlay', TELEMETRY_WIDGET, 440, 900, 1360, 120)
 PROFILES['large']['widgets'][TELEMETRY_WIDGET]['default']['enabled'] = False
 PROFILES['large']['widgets'][TELEMETRY_WIDGET]['note'] = 'Live steering and acceleration telemetry; hidden during alerts'
-OPTIONAL_WIDGETS = frozenset({MODE_WIDGET, CLOCK_WIDGET, STOPPED_TIMER_WIDGET, CEM_GAUGE_WIDGET, TELEMETRY_WIDGET})
+PROFILES['large']['widgets'][TELEMETRY_WHEEL_WIDGET] = _widget('Mini telemetry wheel', TELEMETRY_WHEEL_WIDGET, 240, 240, 1530, 310)
+PROFILES['large']['widgets'][TELEMETRY_WHEEL_WIDGET]['default']['enabled'] = False
+PROFILES['large']['widgets'][TELEMETRY_WHEEL_WIDGET]['note'] = 'Wheel and four telemetry arcs only; hidden during alerts'
+OPTIONAL_WIDGETS = frozenset({MODE_WIDGET, CLOCK_WIDGET, STOPPED_TIMER_WIDGET, CEM_GAUGE_WIDGET, TELEMETRY_WIDGET, TELEMETRY_WHEEL_WIDGET})
 
 # These editor sprites use the runtime components and their canonical assets/fonts.
 RUNTIME_PREVIEW_WIDGETS = {
@@ -200,7 +204,7 @@ WIDGET_COLORS = {
 
 # Back-to-front order used when a layout first opts into custom layers.
 DEFAULT_WIDGET_ORDER = {
-  "large": (TELEMETRY_WIDGET, "pip_left", "pip_right", "cruise_limits", "speed_limit_actions", CEM_GAUGE_WIDGET, "current_speed",
+  "large": (TELEMETRY_WIDGET, TELEMETRY_WHEEL_WIDGET, "pip_left", "pip_right", "cruise_limits", "speed_limit_actions", CEM_GAUGE_WIDGET, "current_speed",
             "steering_wheel", "torque_bar", "driver_monitor", MODE_WIDGET, CLOCK_WIDGET),
   "compact": ("pip_left", "pip_right", "speed_limit", "max_speed", "steering_wheel", "torque_bar",
               "speed_limit_actions", "driver_monitor", *RAIL_WIDGETS, MODE_WIDGET, CLOCK_WIDGET, STOPPED_TIMER_WIDGET),

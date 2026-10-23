@@ -9,6 +9,7 @@ from openpilot.starpilot.ui.presentation import FontRole
 from openpilot.starpilot.ui.wheel_feedback import wheel_rotation
 
 KEY = 'telemetry_overlay'
+MINI_KEY = 'telemetry_wheel'
 WIDTH, HEIGHT = 440, 900
 WHITE = rl.Color(240, 247, 250, 255)
 MUTED = rl.Color(163, 180, 190, 255)
@@ -26,38 +27,43 @@ class TelemetryOverlay:
     self.fonts = fonts
     self.wheel = SteeringWheelWidget(assets)
 
-  def render(self, state):
-    saved = placement(state.customization, 'large', KEY)
+  def render(self, state, *, mini=False):
+    saved = placement(state.customization, 'large', MINI_KEY if mini else KEY)
     # Never cover any alert. Resources stay unallocated while the option is off.
     if not saved['enabled'] or state.alert.size != AlertSize.NONE:
       return
     x, y = saved['x'], saved['y']
     observation = state.telemetry
-    rl.draw_rectangle_rec(rl.Rectangle(x, y, WIDTH, HEIGHT), rl.Color(4, 15, 23, 232))
+    if not mini:
+      rl.draw_rectangle_rec(rl.Rectangle(x, y, WIDTH, HEIGHT), rl.Color(4, 15, 23, 232))
 
     def text(value, dx, dy, color=MUTED, size=23):
       self.fonts.draw(value, FontRole.NORMAL, size, x + dx, y + dy, color)
 
-    text('TELEMETRY', 18, 16)
-    cx, cy = x + 190, y + 184
+    if not mini:
+      text('TELEMETRY', 18, 16)
+    scale = .68 if mini else 1.
+    cx, cy = (x + 120, y + 120) if mini else (x + 190, y + 184)
     # Four fixed-cost arcs share a signed centre and fixed +/-180 degree scales.
     # No history, live allocations of textures, or per-frame file reads.
     values = (None if observation.desired_lateral is None else observation.desired_lateral / 3.,
               None if observation.actual_lateral is None else observation.actual_lateral / 3.,
               observation.target_torque, observation.applied_torque)
     for index, (value, color) in enumerate(zip(values, COLORS, strict=True)):
-      radius = 151 - index * 8
-      rl.draw_ring(rl.Vector2(cx, cy), radius, radius + 3, 145, 395, 48, TRACK)
+      radius = (151 - index * 8) * scale
+      rl.draw_ring(rl.Vector2(cx, cy), radius, radius + 3 * scale, 145, 395, 48, TRACK)
       if value is not None:
         angle = 270 + max(-1., min(1., value)) * 125
-        rl.draw_ring(rl.Vector2(cx, cy), radius, radius + 4, min(270, angle), max(270, angle) + .15, 24, color)
+        rl.draw_ring(rl.Vector2(cx, cy), radius, radius + 4 * scale, min(270, angle), max(270, angle) + .15, 24, color)
     self.wheel.prepare()
     texture = self.wheel._texture
     rl.draw_texture_pro(texture, rl.Rectangle(0, 0, 144, 144),
-                        rl.Rectangle(cx, cy, 220, 220), rl.Vector2(110, 110),
+                        rl.Rectangle(cx, cy, 220 * scale, 220 * scale), rl.Vector2(110 * scale, 110 * scale),
                         wheel_rotation(observation.angle), WHITE if observation.angle is not None else MUTED)
-    text('<', 24, 165, COLORS[1] if observation.left_blinker else TRACK, 36)
-    text('>', 330, 165, COLORS[1] if observation.right_blinker else TRACK, 36)
+    text('<', 7 if mini else 24, 107 if mini else 165, COLORS[1] if observation.left_blinker else TRACK, 24 if mini else 36)
+    text('>', 215 if mini else 330, 107 if mini else 165, COLORS[1] if observation.right_blinker else TRACK, 24 if mini else 36)
+    if mini:
+      return
     rows = (('DES LAT', shown(observation.desired_lateral, ' m/s²'), COLORS[0]),
             ('ACT LAT', shown(observation.actual_lateral, ' m/s²'), COLORS[1]),
             ('TGT %', shown(observation.target_torque, '%', 100, 0), COLORS[2]),

@@ -293,6 +293,7 @@ class OnroadView:
       pip(content, state, submit=submit)
     if large:
       submit("telemetry_overlay", lambda: self.telemetry_overlay.render(state))
+      submit("telemetry_wheel", lambda: self.telemetry_overlay.render(state, mini=True))
       if "nav_map" in state.customization["layouts"]["large"] and state.alert.size != AlertSize.FULL:
         if map_layer := getattr(self, "map_layer", None):
           submit("nav_map", lambda: map_layer(content, state))
@@ -376,6 +377,7 @@ class OnroadView:
           self.extra_overlays(content, state)
       else:
         self.telemetry_overlay.render(state)
+        self.telemetry_overlay.render(state, mini=True)
         pip_layer = getattr(self, "pip_layer", None)
         if pip_layer is not None and state.camera_available:
           pip_layer(content, state)
