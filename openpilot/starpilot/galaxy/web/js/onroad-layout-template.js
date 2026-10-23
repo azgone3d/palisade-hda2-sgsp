@@ -307,6 +307,8 @@ export const ONROAD_LAYOUT_TEMPLATE = `
               </div>
               </div>
               <section v-if="!projection" v-show="state.inspectorPanel === 'road'" class="gx-layout__colors" aria-label="Path and lane colors">
+                <label>Status border<GalaxySelect class="gx-field gx-field--full" :value="state.draft.statusStyle || 'classic'" :disabled="!editAvailable || !!state.drag || !!state.layerDrag" @change="setStatusStyle($event.target.value)"><option value="classic">Classic</option><option value="neon">Neon ember</option></GalaxySelect></label>
+                <p class="gx-note">Vivid status colors with a slow glow fading to transparent. Warnings keep priority. The live effect appears on the device.</p>
                 <div class="gx-layout__subhead"><h4>Path &amp; Lane Colors</h4><button class="gx-btn gx-btn--tonal" type="button" :disabled="!editAvailable || !!state.drag" @click="resetRoad" aria-label="Reset road colors" title="Reset road colors">Reset</button></div>
                 <label>Path style<GalaxySelect class="gx-field gx-field--full" :value="roadMode" :disabled="!editAvailable || !!state.drag" @change="setRoadMode($event.target.value)">
                   <option value="acceleration">Acceleration colors</option>

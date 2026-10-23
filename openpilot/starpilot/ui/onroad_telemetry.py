@@ -58,6 +58,8 @@ class TelemetryOverlay:
         angle = 270 + max(-1., min(1., value)) * 125
         rl.draw_ring(rl.Vector2(cx, cy), radius, radius + 4 * scale, min(270, angle), max(270, angle) + .15, 24, color)
     experimental = bool(mini and state.experimental_enabled)
+    from openpilot.starpilot.ui.onroad_neon import circle_glow
+    circle_glow(rl.Vector2(cx, cy), 112 * scale, state)
     self.wheel.prepare(experimental=experimental)
     texture = self.wheel._experimental_texture if experimental else self.wheel._texture
     rl.draw_texture_pro(texture, rl.Rectangle(0, 0, 144, 144),

@@ -100,5 +100,8 @@ class DriverMonitorLayer:
       self.renderer._awareness_unfull = False
       self.renderer._fade_filter.update(0.35 if visible else 0.0)
     if visible:
+      if ready:
+        from openpilot.starpilot.ui.onroad_neon import frame_glow
+        frame_glow(bounds, state, roundness=1.)
       draw_widget_frame(bounds, state.customization, self.profile, "driver_monitor")
       draw_monitor_art(self.renderer, bounds, self.profile)

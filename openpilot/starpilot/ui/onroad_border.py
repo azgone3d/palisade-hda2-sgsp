@@ -35,7 +35,7 @@ def half_colors(state: OnroadState, time_s: float) -> tuple[rl.Color | None, rl.
   return color(signals.left_blindspot, signals.left_blinker), color(signals.right_blindspot, signals.right_blinker)
 
 
-def render_compact_half_borders(state: OnroadState, time_s: float) -> None:
+def render_compact_half_borders(state: OnroadState, time_s: float, *, border_width: float = 8) -> None:
   left, right = half_colors(state, time_s)
   border = rl.Rectangle(4, 4, 468, 232)
   for x, width, color in ((0, 238, left), (238, 238, right)):
@@ -43,12 +43,12 @@ def render_compact_half_borders(state: OnroadState, time_s: float) -> None:
       continue
     clip.begin_scissor_mode(x, 0, width, 240)
     try:
-      rl.draw_rectangle_rounded_lines_ex(border, 0.12, 16, 8, color)
+      rl.draw_rectangle_rounded_lines_ex(border, 0.12, 16, border_width, color)
     finally:
       clip.end_scissor_mode()
 
 
-def render_large_half_borders(state: OnroadState, time_s: float, content: rl.Rectangle, frame_height: int) -> None:
+def render_large_half_borders(state: OnroadState, time_s: float, content: rl.Rectangle, frame_height: int, *, border_width: float = 30) -> None:
   """Android Auto: tint each half of the large status edge, matching the C4 half borders."""
   left, right = half_colors(state, time_s)
   middle = int(content.x + content.width / 2)
@@ -57,7 +57,7 @@ def render_large_half_borders(state: OnroadState, time_s: float, content: rl.Rec
       continue
     clip.begin_scissor_mode(x, 0, width, frame_height)
     try:
-      rl.draw_rectangle_rounded_lines_ex(content, 0.12, 10, 30, color)
+      rl.draw_rectangle_rounded_lines_ex(content, 0.12, 10, border_width, color)
     finally:
       clip.end_scissor_mode()
 

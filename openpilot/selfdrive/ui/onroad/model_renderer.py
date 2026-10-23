@@ -10,6 +10,7 @@ from openpilot.starpilot.ui.appearance_preferences import format_lead_info
 from openpilot.starpilot.ui.rainbow_path import RainbowPath
 from openpilot.starpilot.ui.road_colors import edge_gradient, lane_color, path_mode, solid_gradient
 from openpilot.starpilot.ui.onroad_customization import ROAD_COLORS
+from openpilot.starpilot.ui import neon_model
 from openpilot.starpilot.lateral.lane_feedback import BLUE, direction as lane_centering_direction
 from openpilot.selfdrive.locationd.calibrationd import HEIGHT_INIT
 from openpilot.selfdrive.ui.ui_state import ui_state
@@ -305,6 +306,9 @@ class ModelRenderer(Widget):
       color = lane_color(getattr(self, "road_style", {}), False, rl.Color(255, 255, 255, int(alpha * 255)), alpha)
       if (i == 1 and self._lane_centering_direction < 0) or (i == 2 and self._lane_centering_direction > 0):
         color = rl.Color(*BLUE, int(alpha * 255))
+      elif (rgb := getattr(self, 'road_style', {}).get('_neonRgb')) is not None:
+        neon_model.draw_lane(self._rect, lane_line.projected_points, rgb, alpha, draw_polygon)
+        color = rl.Color(*rgb, int(alpha * 255))
       draw_polygon(self._rect, lane_line.projected_points, color)
 
     for i, road_edge in enumerate(self._road_edges):
@@ -372,6 +376,10 @@ class ModelRenderer(Widget):
     # Draw lead vehicles if available
     for lead in self._lead_vehicles:
       if not lead.glow or not lead.chevron:
+        continue
+
+      rgb = getattr(self, 'road_style', {}).get('_neonRgb')
+      if rgb is not None and neon_model.draw_chevron(lead, rgb):
         continue
 
       rl.draw_triangle_fan(lead.glow, len(lead.glow), rl.Color(218, 202, 37, 255))

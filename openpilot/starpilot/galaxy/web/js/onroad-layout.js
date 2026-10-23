@@ -815,6 +815,13 @@ export const OnroadLayoutPage = {
       this.recordChange(before)
       this.state.notice = ""
     },
+    setStatusStyle(value) {
+      if (!this.editable || this.state.drag || this.state.layerDrag || !["classic", "neon"].includes(value)) return
+      const before = clone(this.state.draft)
+      this.state.draft.statusStyle = value
+      this.recordChange(before)
+      this.state.notice = ""
+    },
     displayRow(key) { return this.state.data?.display?.find(row => row.key === key) },
     displayValue(key) { return this.state.draft?.display?.[key] },
     displayAvailable(row) { return !!row?.available && (!row.requires || this.displayValue(row.requires) === "On") },

@@ -17,6 +17,7 @@ from openpilot.starpilot.ui.onroad_widget_style import draw_control_card
 from openpilot.starpilot.ui.presentation import BitmapFonts, FontRole
 from openpilot.starpilot.ui.wheel_feedback import WheelFeedbackFade, wheel_rotation
 from openpilot.starpilot.ui.unified_speed_presentation import resolve_unified_speed
+from openpilot.starpilot.ui.onroad_neon import frame_glow, decoration_color, circle_glow
 
 
 ENGAGED = rl.Color(128, 216, 166, 255)
@@ -75,6 +76,7 @@ class UnifiedSpeedWidget:
     border = rl.Color(*rgba(state.customization, 'cardBorder', 'large', 'cruise_limits'))
     text = rl.Color(*rgba(state.customization, 'text', 'large', 'cruise_limits'))
     muted, accent = rl.Color(172, 190, 203, 255), rl.Color(197, 163, 255, 255)
+    frame_glow(rect, state, roundness=.09)
     draw_control_card(rect, fill=fill, border=border, border_width=1, roundness=.09)
 
     align = state.customization.get('speedAlign', 'left')
@@ -232,6 +234,11 @@ class CurrentSpeedHud:
     rect = rl.Rectangle(content.x + 610 + dx, content.y + dy, 580, 300)
     number_top, _ = self.fonts.vertical_ink(speed, FontRole.SPEED, 176)
     old_top, old_bottom = self.fonts.vertical_ink(speed, FontRole.BOLD, 176)
+    if glow := decoration_color(state):
+      for dx_glow in (-3, 3):
+        halo = rl.Rectangle(rect.x + dx_glow, rect.y, rect.width, rect.height)
+        _center(self.fonts, speed, FontRole.SPEED, 176, halo, content.y + 42 + dy + old_top - number_top,
+                rl.Color(glow.r, glow.g, glow.b, 35))
     _center(self.fonts, speed, FontRole.SPEED, 176, rect, content.y + 42 + dy + old_top - number_top,
             rl.Color(*rgba(state.customization, 'text', 'large', 'current_speed')))
     unit = 'km/h' if state.metric else 'mph'
@@ -284,6 +291,7 @@ class SteeringWheelWidget:
     y = content.y + 45 + dy
     size, _ = widget_size(state.customization, "large", "steering_wheel")
     radius = size / 2
+    circle_glow(rl.Vector2(x + radius, y + radius), radius, state)
     rl.draw_circle(int(x + radius), int(y + radius), radius, rl.Color(*rgba(state.customization, "cardFill", "large", "steering_wheel")))
     border = rl.Color(*rgba(state.customization, "cardBorder", "large", "steering_wheel"))
     if border.a:

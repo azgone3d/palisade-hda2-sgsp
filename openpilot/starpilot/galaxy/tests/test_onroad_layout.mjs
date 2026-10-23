@@ -1130,3 +1130,6 @@ failedSave.feed.save(failedSave.feed.data.document)
 await failedSave.reply(1, { ...withDisplayData(), failed: ["Lead Info"] })
 assert.match(failedSave.updates.at(-1).notice, /did not change: Lead Info/)
 console.log('Display options, target switching and reload during polling passed')
+
+for (const statusStyle of ["classic", "neon"]) assert.equal(validDocument({ ...data.document, statusStyle }, data.metadata), true)
+for (const statusStyle of [true, null, 1, "fire", {}]) assert.equal(validDocument({ ...data.document, statusStyle }, data.metadata), false)

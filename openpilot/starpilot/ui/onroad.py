@@ -22,6 +22,7 @@ from openpilot.starpilot.ui.appearance_preferences import CameraViewChoice
 
 from openpilot.starpilot.ui.onroad_alerts import AlertRenderer
 from openpilot.starpilot.ui.onroad_border import render_compact_half_borders, render_large_half_borders
+from openpilot.starpilot.ui import onroad_neon
 from openpilot.starpilot.ui.onroad_compact_widgets import CompactHudRenderer, MiciSidebarWidgets
 from openpilot.starpilot.ui.onroad_curve import controlling as curve_controlling, glow_color, intensity, render_glow, status_label
 from openpilot.starpilot.ui.onroad_conditional import stop_active
@@ -47,6 +48,8 @@ ProjectionControlLayer = Callable[[OnroadState], None]
 
 
 def driving_mode_description(state: OnroadState) -> str:
+  if state.lateral_standstill_ready:
+    return 'ACC + AOL ready at stop' if state.longitudinal_active else 'AOL ready at stop'
   if state.longitudinal_overridden:
     return "ACC - Override"
   if state.lateral_active and state.switchback_mode:
@@ -69,6 +72,10 @@ def clock_text(now: datetime | None = None, use_24_hour: bool = False) -> str:
 
 
 def axis_status_color(state: OnroadState) -> rl.Color:
+  return onroad_neon.status_color(state, _classic_axis_status_color(state))
+
+
+def _classic_axis_status_color(state: OnroadState) -> rl.Color:
   """Retain StarPilot's existing off, AOL, long-only, and combined edge colors."""
   if state.driver_override_active or state.longitudinal_overridden:
     return rl.Color(145, 155, 149, 255)
@@ -443,10 +450,17 @@ class OnroadView:
       self.fonts.draw(label, FontRole.SEMI_BOLD, 29, 1390 + right_shift, 56,
                       curve_color)
     self._traffic_badge(state, 56 + 45 * int(label is not None))
+    if (state.lateral_standstill_ready and state.alert.size == AlertSize.NONE and
+        state.appearance.camera_view != CameraViewChoice.DRIVER and not state.reverse_driver_camera):
+      self.fonts.draw('AOL READY - STOPPED', FontRole.SEMI_BOLD, 34,
+                      content.x + content.width / 2 - 185, content.y + 300, rl.Color(0, 140, 255, 255))
     render_glow(content, state, border_width=30, time_s=state.observed_ns / 1e9 if state.observed_ns else rl.get_time())
+    onroad_neon.render(content, state, edge, border_width=30,
+                      time_s=state.observed_ns / 1e9 if state.observed_ns else rl.get_time())
     rl.draw_rectangle_lines_ex(frame, 30, rl.BLACK)
-    rl.draw_rectangle_rounded_lines_ex(content, 0.12, 10, 30, edge)
-    render_large_half_borders(state, state.observed_ns / 1e9 if state.observed_ns else rl.get_time(), content, int(height))
+    edge_width = 2 if onroad_neon.enabled(state) else 30
+    rl.draw_rectangle_rounded_lines_ex(content, 0.12, 10, edge_width, edge)
+    render_large_half_borders(state, state.observed_ns / 1e9 if state.observed_ns else rl.get_time(), content, int(height), border_width=edge_width)
     self._preview_badge(state)
 
   def _compact(self, state: OnroadState) -> None:
@@ -527,10 +541,13 @@ class OnroadView:
         self.compact_sidebar.render(rail, state)
     clip.begin_scissor_mode(0, 0, 476, 240)
     try:
-      rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(4, 4, 468, 232), 0.12, 16, 8, color)
+      onroad_neon.render(frame, state, color, border_width=8,
+                        time_s=state.observed_ns / 1e9 if state.observed_ns else rl.get_time())
+      rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(4, 4, 468, 232), 0.12, 16, 1 if onroad_neon.enabled(state) else 8, color)
     finally:
       clip.end_scissor_mode()
-    render_compact_half_borders(state, state.observed_ns / 1e9 if state.observed_ns else rl.get_time())
+    render_compact_half_borders(state, state.observed_ns / 1e9 if state.observed_ns else rl.get_time(),
+                                border_width=1 if onroad_neon.enabled(state) else 8)
 
   def _stopped_timer(self, state: OnroadState, seconds: int) -> None:
     profile = str(self.fonts.profile)

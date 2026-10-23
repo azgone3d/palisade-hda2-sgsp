@@ -226,6 +226,7 @@ class TestOnroadAxes(unittest.TestCase):
           view.extra_overlays = None
           view.alert = Mock()
           view.torque_bar = Mock()
+          view.telemetry_overlay = Mock()
           view.unified_speed = Mock()
           view.navigation = Mock()
           view.navigation_favorites = Mock()

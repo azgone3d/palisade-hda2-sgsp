@@ -167,6 +167,7 @@ class StarShellSession:
       self.camera_owner = camera_owner
       self.camera_paint = True
       def camera_layer(rect, state):
+        from openpilot.starpilot.ui.onroad_neon import model_style
         if profile == Profile.COMPACT:
           camera_owner.render_camera_model_layer(rect, camera_view=state.appearance.camera_view,
                                                  reverse_driver=state.reverse_driver_camera,
@@ -179,7 +180,9 @@ class StarShellSession:
         else:
           camera_owner.render_camera_model_layer(rect, camera_view=state.appearance.camera_view,
                                                  reverse_driver=state.reverse_driver_camera,
-                                                 road_style=state.customization["roadColors"]["large"])
+                                                 road_style=model_style(state, 'large'),
+                                                 lead_display=(state.appearance.show_lead_indicator and state.lead_indicator_source_fresh,
+                                                               state.appearance.lead_info_mode, state.appearance.lead_info_metric))
       self.view = ShellView(self.fonts, Path(__file__).parents[2] / "selfdrive/assets",
                             camera_layer=camera_layer,
                             pip_layer=self._render_pip)

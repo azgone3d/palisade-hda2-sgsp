@@ -304,6 +304,10 @@ def validate_document(value, *, _legacy_geometry=False):
     fields.add('clock24Hour')
     if type(value['clock24Hour']) is not bool:
       raise ValueError('Invalid clock format preference')
+  if 'statusStyle' in value:
+    fields.add('statusStyle')
+    if type(value['statusStyle']) is not str or value['statusStyle'] not in ('classic', 'neon'):
+      raise ValueError('Invalid status edge style')
   if 'showMaxSpeed' in value:
     fields.add('showMaxSpeed')
     if type(value['showMaxSpeed']) is not bool:
@@ -475,6 +479,8 @@ def validate_document(value, *, _legacy_geometry=False):
     result['speedAlign'] = value['speedAlign']
   if 'clock24Hour' in value:
     result['clock24Hour'] = value['clock24Hour']
+  if 'statusStyle' in value:
+    result['statusStyle'] = value['statusStyle']
   if 'showMaxSpeed' in value:
     result['showMaxSpeed'] = value['showMaxSpeed']
   if len(json.dumps(result, separators=(",", ":")).encode()) > MAX_BYTES:

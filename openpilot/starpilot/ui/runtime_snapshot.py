@@ -23,6 +23,7 @@ from openpilot.starpilot.conditional_mode.policy import ModeChoice
 from openpilot.starpilot.conditional_mode.manual import TRAFFIC_MODE_ACTION, read_button_map
 from openpilot.starpilot.feature_capabilities import lateral_supported, longitudinal_supported
 from openpilot.starpilot.aol.runtime import current_axis
+from openpilot.starpilot.ui.onroad_standstill import lateral_ready
 from openpilot.starpilot.conditional_mode.projection import paired_clocks_ns
 from openpilot.starpilot.conditional_mode.runtime_settings import ConditionalSettingsOwner
 from openpilot.starpilot.conditional_mode.status import settings_fingerprint
@@ -636,6 +637,7 @@ class RuntimeSnapshotAdapter:
     display_lat_active = bool(display_control.latActive) if display_control is not None else False
     display_long_active = bool(display_control.longActive) if display_control is not None else False
     long_engaged = bool(display_selfdrive is not None and getattr(display_selfdrive, 'enabled', False))
+    axis = None
     if getattr(ui, 'aol_runtime', False):
       axis = current_axis(sm, now_ns=now_ns) if started and sm.recv_frame.get('aolAxisState', 0) > after else None
       long_engaged = long_engaged and bool(axis is not None and axis.nativeAcknowledged and axis.desiredLongitudinal)
@@ -677,6 +679,7 @@ class RuntimeSnapshotAdapter:
                          wheel_acceleration=observe_wheel_acceleration(display_car),
                          steering_angle_deg=observe_wheel_angle(display_car),
                          lateral_active=display_lat_active, longitudinal_active=display_long_active,
+                         lateral_standstill_ready=lateral_ready(cp, display_car if display_car_valid else None, display_control, axis),
                          longitudinal_overridden=longitudinal_overridden,
                          driver_override_active=bool(display_car_valid and (
                            display_lat_active and getattr(display_car, 'steeringPressed', False) or
