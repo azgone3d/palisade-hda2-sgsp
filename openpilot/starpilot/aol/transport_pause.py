@@ -299,7 +299,7 @@ class TransportPauseFeedback:
     self.healthy_native_ns = 0
     self.healthy_inventory = None
 
-  def _native_long_withdrawal_lateral_current(self, sm, cp, cs, axis, now_ns, *, latched, producer):
+  def _native_long_withdrawal_lateral_current(self, sm, cp, cs, axis, now_ns, *, latched, producer, signature):
     """Retain existing LAT intent from a fresh independently granted LAT proof.
 
     Requested but denied LONG is never an active combined-axis baseline. This
@@ -308,14 +308,36 @@ class TransportPauseFeedback:
     from openpilot.starpilot.nostalgia import physical_cancel
     from openpilot.starpilot.car.gm.aol import native_accepts_cp
     gm = native_accepts_cp(cp, int(cp.safetyConfigs[0].safetyModel.raw), int(cp.safetyConfigs[0].safetyParam))
+    # Card can receive the native LONG withdrawal before the matching SD axis
+    # publication. Retain intent only against the accepted or forward same-
+    # producer, still-unexpired Palisade proof. Native must grant LAT below;
+    # this never validates the old LONG output or renews its healthy baseline.
+    held_palisade_combined = False
+    if axis.longitudinalActive and not gm:
+      from opendbc.car.hyundai.blended_stock_aol import qualified_alpha
+      from opendbc.car import structs
+      previous = self.signature
+      same_proof = signature == previous and axis.sequence == self.sequence
+      forward_proof = bool(previous is not None and axis.sequence > self.sequence and
+        previous[5] == 'none' and all(previous[index] for index in (9, 10, 11, 12, 13)) and
+        axis.sourceCarStateMonoTime >= previous[8] and axis.observedMonoTime >= previous[2] and
+        axis.faultEventMonoTime >= previous[6] and axis.faultEventMonoTime == int(sm.logMonoTime['onroadEvents']) and
+        signature[14:16] == previous[14:16])
+      held_palisade_combined = bool(
+        qualified_alpha(cp, marked_only=True) and cp.safetyConfigs[0].safetyParam == 0x2014 and
+        str(axis.mode) == 'combined' and axis.desiredLongitudinal and
+        (same_proof or forward_proof) and
+        self.healthy_inventory == self.lateral_inventory and
+        0 < self.healthy_feedback_ns <= now_ns and now_ns - self.healthy_feedback_ns <= AXIS_MAX_AGE_NS and
+        cs.gearShifter == structs.CarState.GearShifter.drive and not cs.seatbeltUnlatched)
     if (not latched or self.failed or self.paused or self.pending_event or self.retention_started_ns or
         not self.session or str(axis.sessionId) != self.session or
         not producer or producer != self.availability_producer or
         str(getattr(axis, 'intentProducerSessionId', '')) != producer or
         int(getattr(axis, 'intentIntegrityEpoch', 0)) != self.availability_epoch or
         not self.lateral_inventory or not self.lateral_baseline_ns or
-        str(axis.faultReason) != 'none' or not gm and str(axis.mode) != 'lateralOnly' or not axis.nativeAcknowledged or
-        not axis.desiredLateral or not axis.lateralActive or axis.longitudinalActive and not gm or
+        str(axis.faultReason) != 'none' or not gm and not held_palisade_combined and str(axis.mode) != 'lateralOnly' or not axis.nativeAcknowledged or
+        not axis.desiredLateral or not axis.lateralActive or axis.longitudinalActive and not gm and not held_palisade_combined or
         not 0 < self.lateral_source_ns <= axis.sourceCarStateMonoTime <= axis.observedMonoTime <= now_ns or
         now_ns - axis.sourceCarStateMonoTime > AXIS_MAX_AGE_NS or
         not cs.canValid or cs.canTimeout or cs.steerFaultTemporary or cs.steerFaultPermanent or cs.accFaulted or
@@ -327,6 +349,7 @@ class TransportPauseFeedback:
       return None
     native = independent_lateral_health(sm, cp, cs, self.session, now_ns)
     if (native is None or not native.pandaInventory or not native.requestedLongitudinal or native.longitudinalAllowed or
+        held_palisade_combined and axis.sourceCarStateMonoTime > native.observedMonoTime or
         native.observedMonoTime < self.lateral_native_ns or
         (native.pandaSerial, tuple(slot.hardwareSerial for slot in native.pandaInventory)) != self.lateral_inventory):
       return None
@@ -1175,7 +1198,7 @@ class TransportPauseFeedback:
       if native is None and latched and current and continuity and baseline:
         native = _newer_combined_intent_native(sm, cp, cs, axis, now_ns)
       lateral_native = (self._native_long_withdrawal_lateral_current(sm, cp, cs, axis, now_ns,
-        latched=latched, producer=intent_producer_session)
+        latched=latched, producer=intent_producer_session, signature=signature)
         if native is None and current and continuity and baseline else None)
       if lateral_native is not None:
         # Record only the genuinely current LAT proof. Do not renew a combined
