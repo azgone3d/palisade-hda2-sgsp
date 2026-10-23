@@ -660,7 +660,12 @@ class RuntimeSnapshotAdapter:
         current_message(sm, 'controlsState', now_ns, after_frame=after),
         current_message(sm, 'carOutput', now_ns, after_frame=after),
         current_message(sm, 'longitudinalPlan', now_ns, after_frame=after))
-    onroad = OnroadState(developer_metrics=developer_metrics, telemetry=telemetry,
+    from openpilot.starpilot.ui.brake_lights import observe as observe_brake_lights
+    lamp_companion = display_message(sm, 'starpilotCarState', now_ns, after_frame=after) if started else None
+    brake_lights = observe_brake_lights(cp, display_car, lamp_companion,
+      car_ns=int(sm.logMonoTime.get('carState',0)), companion_ns=int(sm.logMonoTime.get('starpilotCarState',0)),
+      now_ns=now_ns, long_active=display_long_active)
+    onroad = OnroadState(developer_metrics=developer_metrics, telemetry=telemetry, brake_lights=brake_lights,
                          engaged=display_lat_active or display_long_active or longitudinal_overridden, camera_available=started,
                          speed_mps=raw_speed, cruise_kph=cruise, speed_limit=observation,
                          appearance=self._appearance_value, customization=self._customization_value,

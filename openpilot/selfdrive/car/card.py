@@ -807,6 +807,10 @@ class Car:
 
   def aol_honda_brake_source(self, CS, now_ns: int) -> int:
     observation = getattr(self, '_aol_can_observation', None)
+    from openpilot.starpilot.car.hyundai.aol import palisade_brake_source
+    palisade_source = palisade_brake_source(getattr(self, 'CI', None), CS, observation, now_ns)
+    if palisade_source:
+      return palisade_source
     if (not CS.brakePressed or not qualified_honda_stock_aol(self.CP, marked_only=True) or
         observation is None or observation[0] is not CS):
       return 0
@@ -993,6 +997,12 @@ class Car:
                              sequence=self.slc_cruise_event_id, car_state_stamp=int(cs_send.logMonoTime),
                              valid=bool(cs_send.valid and not CS.canTimeout))
     companion = None
+    from openpilot.starpilot.car.hyundai.palisade_brake_lights import reported as palisade_brake_lights
+    lamps = palisade_brake_lights(self.CI, CS, getattr(self, '_aol_can_observation', None))
+    if lamps is not None:
+      companion = messaging.new_message('starpilotCarState', valid=bool(cs_send.valid), logMonoTime=int(cs_send.logMonoTime))
+      companion.starpilotCarState.sourceCarStateMonoTime = int(cs_send.logMonoTime)
+      companion.starpilotCarState.brakeLights = lamps
     if self.CP.brand == 'tesla' and self.CP.openpilotLongitudinalControl and qualified_tesla_preap(self.CP):
       internal = self.CI.CS.preap
       companion = messaging.new_message('starpilotCarState', valid=bool(cs_send.valid), logMonoTime=int(cs_send.logMonoTime))

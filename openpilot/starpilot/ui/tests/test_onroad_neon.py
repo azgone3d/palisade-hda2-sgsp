@@ -36,6 +36,15 @@ def test_neon_retains_distinct_axes_and_override():
   assert tuple(getattr(axis_status_color(override), c) for c in 'rgba') == (145, 155, 149, 255)
 
 
+def test_stopped_ready_keeps_border_without_claiming_active_steering():
+  stopped = replace(state(), lateral_active=False, lateral_standstill_ready=True)
+  assert tuple(getattr(axis_status_color(stopped), c) for c in 'rgb') == (0, 140, 255)
+  assert not stopped.lateral_active
+  with patch.object(neon.rl, 'draw_rectangle_gradient_v') as vertical, patch.object(neon.rl, 'draw_rectangle_gradient_h'):
+    neon.render(rl.Rectangle(30,30,1800,1020), stopped, axis_status_color(stopped), border_width=30, time_s=1.)
+  assert vertical.call_count == 2
+
+
 @pytest.mark.parametrize('change', [dict(alert=OnroadAlert(size=AlertSize.SMALL)),
   dict(alert=OnroadAlert(critical=True)), dict(camera_available=False),
   dict(lateral_active=False), dict(driver_override_active=True), dict(longitudinal_overridden=True)])
@@ -54,7 +63,7 @@ def test_bounded_draw_count_transparency_and_finite_clock():
     assert vertical.call_count == horizontal.call_count == 2
     for call in vertical.call_args_list + horizontal.call_args_list:
       assert sorted(c.a for c in call.args[-2:])[0] == 0
-      assert max(c.a for c in call.args[-2:]) <= 90
+      assert 70 <= max(c.a for c in call.args[-2:]) <= 140
   with patch.object(neon.rl, 'draw_rectangle_gradient_v') as draw:
     neon.render(rl.Rectangle(0, 0, 476, 240), s, axis_status_color(s), border_width=8, time_s=float('nan'))
   draw.assert_not_called()

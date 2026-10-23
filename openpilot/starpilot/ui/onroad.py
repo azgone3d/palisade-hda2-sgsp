@@ -49,7 +49,7 @@ ProjectionControlLayer = Callable[[OnroadState], None]
 
 def driving_mode_description(state: OnroadState) -> str:
   if state.lateral_standstill_ready:
-    return 'ACC + AOL ready at stop' if state.longitudinal_active else 'AOL ready at stop'
+    return 'ACC + AOL' if state.longitudinal_active else 'Always On Lateral'
   if state.longitudinal_overridden:
     return "ACC - Override"
   if state.lateral_active and state.switchback_mode:
@@ -77,9 +77,10 @@ def axis_status_color(state: OnroadState) -> rl.Color:
 
 def _classic_axis_status_color(state: OnroadState) -> rl.Color:
   """Retain StarPilot's existing off, AOL, long-only, and combined edge colors."""
+  lateral = state.lateral_active or state.lateral_standstill_ready
   if state.driver_override_active or state.longitudinal_overridden:
     return rl.Color(145, 155, 149, 255)
-  if state.lateral_active and state.switchback_mode:
+  if lateral and state.switchback_mode:
     return rl.Color(139, 108, 197, 255)
   if stop_active(state):
     return rl.Color(218, 111, 37, 255)
@@ -90,11 +91,11 @@ def _classic_axis_status_color(state: OnroadState) -> rl.Color:
     return rl.Color(255, 214, 0, 255)
   if mode is not None and mode.effective_experimental:
     return rl.Color(218, 111, 37, 255)
-  if state.lateral_active and state.longitudinal_active:
+  if lateral and state.longitudinal_active:
     if state.experimental_enabled and state.conditional_configured in (None, ModeChoice.STOCK):
       return rl.Color(218, 111, 37, 255)
     return rl.Color(22, 127, 64, 255)
-  if state.lateral_active:
+  if lateral:
     return rl.Color(10, 186, 181, 255)
   if state.longitudinal_active:
     return rl.Color(255, 105, 180, 255)
@@ -450,10 +451,10 @@ class OnroadView:
       self.fonts.draw(label, FontRole.SEMI_BOLD, 29, 1390 + right_shift, 56,
                       curve_color)
     self._traffic_badge(state, 56 + 45 * int(label is not None))
-    if (state.lateral_standstill_ready and state.alert.size == AlertSize.NONE and
-        state.appearance.camera_view != CameraViewChoice.DRIVER and not state.reverse_driver_camera):
-      self.fonts.draw('AOL READY - STOPPED', FontRole.SEMI_BOLD, 34,
-                      content.x + content.width / 2 - 185, content.y + 300, rl.Color(0, 140, 255, 255))
+    if state.brake_lights is True and state.longitudinal_active and state.alert.size == AlertSize.NONE:
+      self.fonts.draw('BRAKE LIGHTS', FontRole.SEMI_BOLD, 32,
+                      content.x + content.width / 2 - 110, content.y + content.height - 100,
+                      rl.Color(255, 64, 64, 255))
     render_glow(content, state, border_width=30, time_s=state.observed_ns / 1e9 if state.observed_ns else rl.get_time())
     onroad_neon.render(content, state, edge, border_width=30,
                       time_s=state.observed_ns / 1e9 if state.observed_ns else rl.get_time())

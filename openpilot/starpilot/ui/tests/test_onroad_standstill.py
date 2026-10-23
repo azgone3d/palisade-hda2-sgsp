@@ -27,7 +27,7 @@ def test_ready_label_requires_current_qualified_intent_and_inactive_steering(vet
 
 def test_ready_is_distinct_from_active_or_disengaged():
   state = replace(reference_onroad('onroad_disengaged_no_camera'), lateral_standstill_ready=True)
-  assert driving_mode_description(state) == 'AOL ready at stop'
+  assert driving_mode_description(state) == 'Always On Lateral'
   assert not state.lateral_active and not state.engaged
 
 

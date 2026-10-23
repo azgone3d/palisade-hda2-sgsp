@@ -387,6 +387,13 @@ class LongitudinalPlanner:
       global_floor = coast_plan.brake_floor
       cruise_profile = None
       slc_floor = None
+    from openpilot.starpilot.car.hyundai.palisade_slc import coast_only
+    slc_no_decel = coast_only(self.CP, slc_target=ceiling.effective_mps,
+      driver_cruise=v_cruise_kph * CV.KPH_TO_MS, curve_target=curve.effective_mps,
+      navigation_target=navigation_target,
+      forced=bool(sm['controlsState'].forceDecel or self.force_stop_plan.forcing))
+    if slc_no_decel:
+      slc_floor = 0.0
     if preap_acceleration_cap is not None:
       selected_acceleration = (preap_acceleration_cap if selected_acceleration is None else
                                min(selected_acceleration, preap_acceleration_cap))
@@ -396,6 +403,11 @@ class LongitudinalPlanner:
                                      base_brake_floor=global_floor, selected_acceleration_max=selected_acceleration, faster_takeoffs=faster_takeoffs,
                                      a_target_prev=self.output_a_target)
     cruise_should_stop = should_stop(v_ego, self.a_cruise)
+    if slc_no_decel:
+      # Do not carry an earlier SLC deceleration through the cruise jerk ramp.
+      # MPC, model, force-stop and other braking owners remain independent.
+      self.a_cruise = max(0.0, self.a_cruise)
+      cruise_should_stop = False
 
     output_a_target_e2e = self.accel_boost.update(sm, output_a_target_e2e, output_a_target_mpc, self.a_cruise)
 

@@ -185,6 +185,7 @@ class OnroadState:
   traffic_display: TrafficDisplay | None = None
   lateral_active: bool = False
   lateral_standstill_ready: bool = False
+  brake_lights: bool | None = None
   longitudinal_active: bool = False
   longitudinal_overridden: bool = False
   driver_override_active: bool = False

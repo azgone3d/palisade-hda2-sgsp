@@ -378,6 +378,32 @@ def palisade_cancel_source(CI, CS, observation, now_ns):
     return 0
 
 
+def palisade_brake_source(CI, CS, observation, now_ns):
+  """Fresh physical brake receipt for the exact Palisade alpha profile; no authority."""
+  from opendbc.car import Bus
+  from opendbc.car.hyundai.values import CAR
+  try:
+    cp = CI.CP
+    if (cp.carFingerprint != CAR.HYUNDAI_PALISADE_2023 or not qualified_blended_alpha(cp, marked_only=True) or
+        cp.safetyConfigs[0].safetyParam != 0x2014 or not CS.brakePressed or not CS.canValid or CS.canTimeout or
+        observation is None or observation[0] is not CS):
+      return 0
+    _, receipt, source_ns, boot_ns = observation
+    parser = CI.can_parsers[Bus.pt]
+    message = parser.message_states.get(parser.dbc.name_to_msg['TCS13'].address)
+    if message is None or not message.timestamps or parser.vl['TCS13']['DriverOverride'] != 2:
+      return 0
+    stamp = int(message.timestamps[-1])
+    if (not 0 < receipt <= now_ns or now_ns - receipt > 30_000_000 or
+        not 0 < stamp <= source_ns <= boot_ns or
+        boot_ns - stamp > min(message.timeout_threshold, 30_000_000) or
+        source_ns - stamp > min(message.timeout_threshold, 30_000_000)):
+      return 0
+    return receipt
+  except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
+    return 0
+
+
 def retained_shared_long_cancel_intent(CP, CS, sm, feedback, owner, *, cancel_source_ns, now_ns, producer):
   """Keep existing mapped intent for one current physical CANCEL/FULL-proof join.
 

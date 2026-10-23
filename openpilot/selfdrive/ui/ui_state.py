@@ -114,6 +114,7 @@ class UIState:
         "carParams",
         "driverMonitoringState",
         "carState",
+        "starpilotCarState",
         "driverStateV2",
         "narrowRoadCameraState",
         "wideRoadCameraState",

@@ -28,7 +28,7 @@ def status_color(state, classic):
 def render(rect, state, color, *, border_width, time_s):
   # Warnings and driver overrides always retain their existing steady treatment.
   if (not enabled(state) or not state.camera_available or state.alert.size != AlertSize.NONE or
-      state.alert.critical or not (state.lateral_active or state.longitudinal_active) or
+      state.alert.critical or not (state.lateral_active or state.longitudinal_active or state.lateral_standstill_ready) or
       state.driver_override_active or state.longitudinal_overridden or not math.isfinite(time_s) or
       (color.r, color.g, color.b) not in COLORS.values()):
     return
@@ -40,7 +40,7 @@ def render(rect, state, color, *, border_width, time_s):
   phase = (time_s % 4.5) * 2 * math.pi / 4.5
   pulse = .76 + .2 * math.sin(phase)
   span = min(int(border_width * 1.8), min(width, height) // 5)
-  alpha = int(76 * pulse)
+  alpha = int(140 * pulse)
   edge = rl.Color(color.r, color.g, color.b, alpha)
   fade = rl.Color(color.r, color.g, color.b, 0)
   rl.draw_rectangle_gradient_v(x, y, width, span, edge, fade)
@@ -52,7 +52,7 @@ def render(rect, state, color, *, border_width, time_s):
 def decoration_color(state):
   if (not enabled(state) or state.alert.size != AlertSize.NONE or state.alert.critical or
       state.driver_override_active or state.longitudinal_overridden or not state.camera_available or
-      not (state.lateral_active or state.longitudinal_active)):
+      not (state.lateral_active or state.longitudinal_active or state.lateral_standstill_ready)):
     return None
   from openpilot.starpilot.ui.onroad import axis_status_color
   color = axis_status_color(state)
@@ -63,7 +63,7 @@ def frame_glow(rect, state, *, roundness=.15):
   color = decoration_color(state)
   if color is None:
     return
-  for width, alpha in ((14, 18), (8, 32), (3, 75)):
+  for width, alpha in ((18, 32), (10, 60), (3, 110)):
     rl.draw_rectangle_rounded_lines_ex(rect, roundness, 10, width, rl.Color(color.r, color.g, color.b, alpha))
 
 
@@ -77,7 +77,7 @@ def circle_glow(center, radius, state, *, subtle=False):
 
 def model_style(state, profile):
   style = state.customization['roadColors'][profile]
-  color = decoration_color(state)
-  if color is None or not state.lead_indicator_source_fresh:
+  if not enabled(state) or not state.camera_available or not state.lead_indicator_source_fresh:
     return style
+  color = decoration_color(state) or rl.Color(145, 155, 149, 255)
   return {**style, '_neonRgb': (color.r, color.g, color.b)}
