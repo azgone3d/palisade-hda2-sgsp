@@ -314,6 +314,9 @@ def _inside_widget(x, y, state, widget, bounds):
     left += state.viewport_width - 1860
     size, _ = widget_size(state.customization, Profile.LARGE, widget)
     right, bottom = left + size, top + size
+  elif widget == 'telemetry_wheel':
+    left += state.viewport_width - 1860
+    right += state.viewport_width - 1860
   return left + dx <= x <= right + dx and top + dy <= y <= bottom + dy
 
 

@@ -33,6 +33,8 @@ class TelemetryOverlay:
     if not saved['enabled'] or state.alert.size != AlertSize.NONE:
       return
     x, y = saved['x'], saved['y']
+    if mini:
+      x += state.viewport_width - 1860
     observation = state.telemetry
     if not mini:
       rl.draw_rectangle_rec(rl.Rectangle(x, y, WIDTH, HEIGHT), rl.Color(4, 15, 23, 232))

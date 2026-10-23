@@ -193,19 +193,21 @@ def test_mini_switches_icon_and_rotates_both_modes(experimental):
   assert texture.call_args.args[-2] == -5.1
 
 
-def test_mini_tap_retains_token_binding_and_hidden_alert_cancels_touch():
+@pytest.mark.parametrize('width', [1860, 2160])
+def test_mini_tap_retains_token_binding_and_hidden_alert_cancels_touch(width):
   from openpilot.starpilot.ui.onroad_state import OnroadInput
-  sample = replace(state(), experimental_available=True, experimental_action_token='displayed')
+  sample = replace(state(), experimental_available=True, experimental_action_token='displayed', viewport_width=width)
   sample.customization['layouts']['large'][TELEMETRY_WHEEL_WIDGET].update(enabled=True, x=1400, y=75)
   emit = Mock()
   touch = OnroadInput(emit)
-  touch.press(1500, 175, sample)
-  touch.release(1500, 175, sample)
+  x = 1500 + width - 1860
+  touch.press(x, 175, sample)
+  touch.release(x, 175, sample)
   assert emit.call_args.args[0].value is True
   emit.reset_mock()
-  touch.press(1500, 175, sample)
-  touch.release(1500, 175, replace(sample, experimental_action_token='changed'))
+  touch.press(x, 175, sample)
+  touch.release(x, 175, replace(sample, experimental_action_token='changed'))
   emit.assert_not_called()
-  touch.press(1500, 175, sample)
-  touch.release(1500, 175, replace(sample, alert=OnroadAlert(size=AlertSize.MID)))
+  touch.press(x, 175, sample)
+  touch.release(x, 175, replace(sample, alert=OnroadAlert(size=AlertSize.MID)))
   emit.assert_not_called()
