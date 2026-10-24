@@ -340,7 +340,18 @@ class TransportPauseFeedback:
         not axis.desiredLateral or not axis.lateralActive or axis.longitudinalActive and not gm and not held_palisade_combined or
         not 0 < self.lateral_source_ns <= axis.sourceCarStateMonoTime <= axis.observedMonoTime <= now_ns or
         now_ns - axis.sourceCarStateMonoTime > AXIS_MAX_AGE_NS or
-        not cs.ca…230 tokens truncated…slot.hardwareSerial for slot in native.pandaInventory)) != self.lateral_inventory):
+        not cs.canValid or cs.canTimeout or cs.steerFaultTemporary or cs.steerFaultPermanent or cs.accFaulted or
+        cs.steeringDisengage or physical_cancel(cs, cp) or
+        not sm.seen['onroadEvents'] or not sm.valid['onroadEvents'] or not sm.alive['onroadEvents'] or
+        not 0 < int(sm.logMonoTime['onroadEvents']) <= now_ns or
+        now_ns - int(sm.logMonoTime['onroadEvents']) > 1_500_000_000 or
+        any(event.immediateDisable or event.softDisable or event.userDisable for event in sm['onroadEvents'])):
+      return None
+    native = independent_lateral_health(sm, cp, cs, self.session, now_ns)
+    if (native is None or not native.pandaInventory or not native.requestedLongitudinal or native.longitudinalAllowed or
+        held_palisade_combined and axis.sourceCarStateMonoTime > native.observedMonoTime or
+        native.observedMonoTime < self.lateral_native_ns or
+        (native.pandaSerial, tuple(slot.hardwareSerial for slot in native.pandaInventory)) != self.lateral_inventory):
       return None
     owners = [index for index, config in enumerate(cp.safetyConfigs)
               if str(config.safetyModel) not in ('silent', 'noOutput')]
