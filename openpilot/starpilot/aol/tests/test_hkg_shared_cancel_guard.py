@@ -149,6 +149,7 @@ def captured_context(cp=None):
     'steer_fault',
     'invalid_can',
     'no_physical_cancel',
+    'gas_override',
   ],
 )
 @pytest.mark.parametrize('profile', ['canfd', 'palisade'])
@@ -215,11 +216,13 @@ def test_shared_cancel_retains_only_original_current_reason_qualified_intent(cas
     cs.canValid = False
   elif case == 'no_physical_cancel':
     cs.buttonEvents = []
+  elif case == 'gas_override':
+    cs.gasPressed = True
   sm['aolSafetyWire'] = encode_safety(native)
   before = deepcopy(vars(feedback))
   native_before = asdict(native)
   result = retained_shared_long_cancel_intent(cp, cs, sm, feedback, owner, cancel_source_ns=source, now_ns=now, producer='authority-card')
-  assert result == (case == 'retain')
+  assert result == (case == 'retain' or case == 'gas_override' and profile == 'palisade')
   assert vars(feedback) == before  # No lease, output, source, baseline or identity renewal.
   assert asdict(native) == native_before
 

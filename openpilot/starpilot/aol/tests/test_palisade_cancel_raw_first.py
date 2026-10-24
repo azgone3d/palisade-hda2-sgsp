@@ -9,7 +9,7 @@ from openpilot.starpilot.aol.transport_pause import TransportPauseFeedback
 from openpilot.starpilot.aol.wire import decode_safety, encode_safety
 
 
-@pytest.mark.parametrize('veto', ['none', 'release', 'no_press', 'unlatched', 'old_panda', 'lateral_denied', 'rx_fault',
+@pytest.mark.parametrize('veto', ['none', 'gas_override', 'release', 'no_press', 'unlatched', 'old_panda', 'lateral_denied', 'rx_fault',
   'relay_fault', 'native_rx', 'native_heartbeat', 'native_invalid', 'producer', 'epoch', 'seatbelt', 'expired', 'can_timeout', 'other_user'])
 def test_raw_panda_first_cancel_retains_only_existing_fresh_intent(veto):
   case = fixture.IoniqAvailabilityTests(methodName='runTest')
@@ -34,11 +34,12 @@ def test_raw_panda_first_cancel_retains_only_existing_fresh_intent(veto):
       now = int(axis.observedMonoTime) + 1_000_000
       press_ns = now
       cs = sd.CS_prev.as_builder()
+      if veto == 'gas_override': cs.gasPressed = True
       cs.buttonEvents = [car.CarState.ButtonEvent(type='cancel', pressed=True)] if veto != 'no_press' else []
       # Store the original physical source before the native status changes.
       assert not feedback.observe(sm, sd.CP, cs, now, latched=True, cancel_source_ns=press_ns,
                                   intent_producer_session='authority-card')
-      if veto in ('none', 'release'):
+      if veto in ('none', 'release', 'gas_override'):
         assert feedback.longitudinal_cancel_ns == press_ns
       now += 10_000_000
       cs.buttonEvents = []  # The button is held, with no new physical edge.
@@ -67,7 +68,7 @@ def test_raw_panda_first_cancel_retains_only_existing_fresh_intent(veto):
       if veto == 'expired': now = press_ns + 200_000_001
       reset = feedback.observe(sm, sd.CP, cs, now, latched=veto != 'unlatched',
         intent_producer_session='wrong-producer' if veto == 'producer' else 'authority-card')
-      if veto not in ('none', 'release'):
+      if veto not in ('none', 'release', 'gas_override'):
         if veto == 'unlatched':
           assert feedback._longitudinal_cancel_current(sm, sd.CP, cs, axis, now,
             latched=False, cancel_source_ns=0, producer='authority-card') is None

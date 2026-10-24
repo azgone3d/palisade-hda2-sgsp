@@ -489,8 +489,10 @@ class Car:
     # Update carState from CAN
     CS = self.CI.update(can_list)
     from openpilot.starpilot.car.gm.aol import f1_conventional_lateral_owner
+    from openpilot.starpilot.car.hyundai.aol import palisade_physical_sources_supported
     cancel_boot_ns = (time.clock_gettime_ns(time.CLOCK_BOOTTIME)
                       if (getattr(self.CI.CS, 'ev6_aol_source_healthy', False) or
+                          palisade_physical_sources_supported(self.CP) or
                           qualified_honda_stock_aol(self.CP, marked_only=True) or
                           qualified_gm(self.CP) and (is_bolt_present_no_acc_pedal_profile(self.CP) or
                                                      f1_conventional_lateral_owner(self.CP)) and

@@ -351,6 +351,12 @@ def physical_cancel_lateral_allowed(CP, CS, intent, native, *, settings, previou
     return False
 
 
+def palisade_physical_sources_supported(CP):
+  """The exact alpha owner whose physical sources require a BOOTTIME sample."""
+  return bool(CP.carFingerprint == HyundaiCAR.HYUNDAI_PALISADE_2023 and
+              qualified_blended_alpha(CP, marked_only=True) and CP.safetyConfigs[0].safetyParam == 0x2014)
+
+
 def palisade_cancel_source(CI, CS, observation, now_ns):
   """Current raw HDA2 alpha CANCEL, using receipt time without renewing it."""
   from opendbc.car import Bus
@@ -362,6 +368,20 @@ def palisade_cancel_source(CI, CS, observation, now_ns):
       return 0
     _, received_ns, can_source_ns, boot_ns = observation
     parser = CI.can_parsers[Bus.pt]
+    pedals_current = CI.CS.blended_cancel_sources_current(parser, cancel=False)
+    if not pedals_current and palisade_physical_sources_supported(CI.CP) and CS.gasPressed and not CS.brakePressed:
+      # Recorded accelerator override is DriverOverride=1 / AclAct=1.
+      # Recognize its real CANCEL without treating it as neutral pedals.
+      # This supplies only occurrence proof; native LAT permission is required
+      # by every downstream retention path and LONG remains withdrawn.
+      expected = (('TCS13', 'ACCEnable', 0), ('TCS13', 'DriverOverride', 1), ('EMS16', 'CF_Ems_AclAct', 1))
+      pedals_current = all(parser.vl[name][signal] == value and
+        all(sample == value for sample in parser.vl_all[name][signal]) for name, signal, value in expected)
+      for name in ('TCS13', 'EMS16'):
+        sample = parser.message_states.get(parser.dbc.name_to_msg[name].address)
+        if (sample is None or not sample.timestamps or not 0 < sample.timestamps[-1] <= can_source_ns <= boot_ns or
+            boot_ns - sample.timestamps[-1] > min(sample.timeout_threshold, 30_000_000)):
+          pedals_current = False
     source = parser.message_states.get(parser.dbc.name_to_msg['CLU11'].address)
     if source is None or not source.timestamps:
       return 0
@@ -370,7 +390,7 @@ def palisade_cancel_source(CI, CS, observation, now_ns):
         not 0 < stamp <= can_source_ns <= boot_ns or
         boot_ns - stamp > min(source.timeout_threshold, 30_000_000) or
         can_source_ns - stamp > min(source.timeout_threshold, 30_000_000) or
-        not CI.CS.blended_cancel_sources_current(parser, cancel=False) or
+        not pedals_current or
         not any(value == Buttons.CANCEL for value in parser.vl_all['CLU11']['CF_Clu_CruiseSwState'])):
       return 0
     return received_ns
@@ -415,6 +435,7 @@ def retained_shared_long_cancel_intent(CP, CS, sm, feedback, owner, *, cancel_so
   from openpilot.starpilot.aol.runtime import AXIS_MAX_AGE_NS, SAFETY_MAX_AGE_NS
   from openpilot.starpilot.aol.transport_pause import cp_identity, independent_lateral_health
   try:
+    palisade = palisade_physical_sources_supported(CP)
     if (not (qualified_sonata_independent(CP) or
              qualified_blended_alpha(CP, marked_only=True) and CP.safetyConfigs[0].safetyParam == 0x2014 or
              CP.carFingerprint in LONG_EV_CARS and qualified_canfd_long(CP, marked_only=True)) or
@@ -429,7 +450,7 @@ def retained_shared_long_cancel_intent(CP, CS, sm, feedback, owner, *, cancel_so
         feedback.source_retention_started_ns or feedback.temporary_host_qualified or
         not feedback.session or not producer or producer != feedback.availability_producer or
         not CS.canValid or CS.canTimeout or CS.accFaulted or CS.steerFaultTemporary or CS.steerFaultPermanent or
-        CS.steeringDisengage or CS.doorOpen or CS.seatbeltUnlatched or CS.brakePressed or CS.gasPressed or
+        CS.steeringDisengage or CS.doorOpen or CS.seatbeltUnlatched or CS.brakePressed or CS.gasPressed and not palisade or
         CS.gearShifter not in (car.CarState.GearShifter.drive, car.CarState.GearShifter.sport,
                               car.CarState.GearShifter.low, car.CarState.GearShifter.brake) or
         not any(event.type == car.CarState.ButtonEvent.Type.cancel and event.pressed for event in CS.buttonEvents) or

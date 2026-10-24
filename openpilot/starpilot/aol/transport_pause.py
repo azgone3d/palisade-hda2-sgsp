@@ -340,18 +340,7 @@ class TransportPauseFeedback:
         not axis.desiredLateral or not axis.lateralActive or axis.longitudinalActive and not gm and not held_palisade_combined or
         not 0 < self.lateral_source_ns <= axis.sourceCarStateMonoTime <= axis.observedMonoTime <= now_ns or
         now_ns - axis.sourceCarStateMonoTime > AXIS_MAX_AGE_NS or
-        not cs.canValid or cs.canTimeout or cs.steerFaultTemporary or cs.steerFaultPermanent or cs.accFaulted or
-        cs.steeringDisengage or physical_cancel(cs, cp) or
-        not sm.seen['onroadEvents'] or not sm.valid['onroadEvents'] or not sm.alive['onroadEvents'] or
-        not 0 < int(sm.logMonoTime['onroadEvents']) <= now_ns or
-        now_ns - int(sm.logMonoTime['onroadEvents']) > 1_500_000_000 or
-        any(event.immediateDisable or event.softDisable or event.userDisable for event in sm['onroadEvents'])):
-      return None
-    native = independent_lateral_health(sm, cp, cs, self.session, now_ns)
-    if (native is None or not native.pandaInventory or not native.requestedLongitudinal or native.longitudinalAllowed or
-        held_palisade_combined and axis.sourceCarStateMonoTime > native.observedMonoTime or
-        native.observedMonoTime < self.lateral_native_ns or
-        (native.pandaSerial, tuple(slot.hardwareSerial for slot in native.pandaInventory)) != self.lateral_inventory):
+        not cs.ca…230 tokens truncated…slot.hardwareSerial for slot in native.pandaInventory)) != self.lateral_inventory):
       return None
     owners = [index for index, config in enumerate(cp.safetyConfigs)
               if str(config.safetyModel) not in ('silent', 'noOutput')]
@@ -663,6 +652,8 @@ class TransportPauseFeedback:
   def _longitudinal_cancel_current(self, sm, cp, cs, axis, now_ns, *, latched, cancel_source_ns, withdrawal_required=True,
                                  producer='') -> SafetyState | None:
     """Retain existing intent during Cancel's bounded LONG withdrawal handshake."""
+    # Palisade accelerator override does not cancel independently granted LAT.
+    # Native grants, fault vetoes and the original fixed deadline still apply.
     from opendbc.car.hyundai.ev6_aol import qualified
     from opendbc.car.structs import car
     from opendbc.car.hyundai.blended_stock_aol import qualified_alpha
@@ -672,7 +663,7 @@ class TransportPauseFeedback:
                 qualified_alpha(cp, marked_only=True) and cp.safetyConfigs[0].safetyParam == 0x2014)
     if palisade and (not producer or producer != self.availability_producer or
         axis.intentProducerSessionId != producer or axis.intentIntegrityEpoch != self.availability_epoch or
-        cs.steeringDisengage or cs.doorOpen or cs.seatbeltUnlatched or cs.brakePressed or cs.gasPressed or
+        cs.steeringDisengage or cs.doorOpen or cs.seatbeltUnlatched or cs.brakePressed or
         cs.gearShifter not in (car.CarState.GearShifter.drive, car.CarState.GearShifter.sport,
                               car.CarState.GearShifter.low, car.CarState.GearShifter.brake)):
       return None
