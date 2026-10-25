@@ -38,7 +38,7 @@ const driveDate = (start, end = null) => {
   const clock = (value) => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date(value * 1000))
   const day = calendar.format(date)
   const endDay = end !== null ? calendar.format(new Date(end * 1000)) : null
-  return `${day} · ${clock(start)}${end !== null ? `–${endDay === day ? "" : endDay + " · "}${clock(end)}` : ""}`
+  return `${day} Â· ${clock(start)}${end !== null ? `â€“${endDay === day ? "" : endDay + " Â· "}${clock(end)}` : ""}`
 }
 const dayLabel = (date) => new Intl.DateTimeFormat(undefined, { timeZone: "UTC", weekday: "short" }).format(new Date(`${date}T00:00:00Z`))
 const recordDisplay = (record, isMetric) => record.value === null ? "Unavailable" :
@@ -51,6 +51,7 @@ export function driveSummary(feed) {
   if (!data) return null
   const isMetric = data.isMetric
   const last = data.lastDrive
+  const account = data.accountHistory?.stats?.all
   const maximum = Math.max(1, ...data.week.days.map((day) => day.distanceMeters ?? 0))
   const models = data.models.slice(0, 3)
   const modelTotal = models.reduce((sum, model) => sum + (model.distanceMeters ?? 0), 0)
@@ -63,6 +64,8 @@ export function driveSummary(feed) {
     return stop
   })
   return {
+    account: account ? { distance: distance(account.distance * 1609.344, isMetric),
+      duration: hours(account.minutes * 60), drives: account.routes } : null,
     analysis: data.analysis,
     last: last && { routeId: last.routeId, date: driveDate(last.startTime, last.endTime), complete: last.complete,
       distance: distance(last.distanceMeters, isMetric), duration: duration(last.durationSeconds), engaged: percent(last.engagedPercent),
@@ -177,7 +180,7 @@ export const Home = {
       <template v-else>
         <section class="gx-card gx-home__last">
           <div class="gx-home__kicker"><span></span> Last drive</div>
-          <p v-if="drives.status !== 'ready'" role="status">{{ drives.status === 'loading' ? 'Loading your drives…' : drives.error || 'Drive history is unavailable.' }}</p>
+          <p v-if="drives.status !== 'ready'" role="status">{{ drives.status === 'loading' ? 'Loading your drivesâ€¦' : drives.error || 'Drive history is unavailable.' }}</p>
           <p v-else-if="!driving.last">No saved drives yet.</p>
           <template v-else>
             <p class="gx-home__date">{{ driving.last.date }}</p>
@@ -192,20 +195,21 @@ export const Home = {
         </section>
         <template v-if="driving">
           <p v-if="driving.analysis.pending" class="gx-home__analysis" role="status">
-            <i class="bi bi-hourglass-split"></i> {{ driving.analysis.running ? 'Updating drive history' : driving.analysis.state === 'waitingParked' ? 'Drive history will update when parked' : 'Drive history queued' }}{{ driving.analysis.pending ? ' · ' + driving.analysis.pending + ' remaining' : '' }}
+            <i class="bi bi-hourglass-split"></i> {{ driving.analysis.running ? 'Updating drive history' : driving.analysis.state === 'waitingParked' ? 'Drive history will update when parked' : 'Drive history queued' }}{{ driving.analysis.pending ? ' Â· ' + driving.analysis.pending + ' remaining' : '' }}
           </p>
           <div class="gx-home__section-title"><span></span>Your driving</div>
           <div class="gx-home__totals">
+            <section v-if="driving.account" class="gx-card"><h2>All-Time Account History</h2><strong>{{ driving.account.distance }}</strong><span>{{ counted(driving.account.drives, "drive") }} Â· {{ driving.account.duration }}</span><small>Account total; local history below is separate</small></section>
             <section class="gx-card"><h2>Saved History</h2><strong>{{ driving.totals.distance }}</strong><span>{{ counted(driving.totals.drives, "drive") }}</span></section>
             <section class="gx-card"><h2>Time on the Road</h2><strong>{{ driving.totals.duration }}</strong><span>{{ driving.totals.engaged }} engaged</span></section>
-            <section class="gx-card"><h2>This Week</h2><strong>{{ driving.week.distance }}</strong><span>{{ counted(driving.week.drives, "drive") }} · {{ driving.week.duration }}</span></section>
+            <section class="gx-card"><h2>This Week</h2><strong>{{ driving.week.distance }}</strong><span>{{ counted(driving.week.drives, "drive") }} Â· {{ driving.week.duration }}</span></section>
           </div>
           <div class="gx-home__pair">
             <section class="gx-card gx-home__week"><h2>This Week</h2>
               <div class="gx-home__week-top"><div class="gx-home__donut" :style="{ '--gx-home-progress': driving.week.progress + '%' }">
                 <strong>{{ driving.week.engaged }}</strong><span>engaged</span></div>
                 <div><strong>{{ driving.week.distance }}</strong><span>across {{ counted(driving.week.drives, "drive") }}</span></div></div>
-              <h3>Distance per day · {{ driving.week.timezone }}</h3>
+              <h3>Distance per day Â· {{ driving.week.timezone }}</h3>
               <div class="gx-home__bars"><div v-for="day in driving.week.days" :key="day.date" :aria-label="day.date + ': ' + day.distance" :title="day.date + ': ' + day.distance">
                 <div class="gx-home__bar-track"><span :style="{ height: day.height + '%' }"></span></div><small>{{ day.label }}</small><small>{{ day.distance }}</small></div></div>
             </section>
@@ -218,7 +222,7 @@ export const Home = {
             <p v-if="!driving.recent.length" class="gx-home__subtle">No saved drives yet.</p>
             <div v-for="drive in driving.recent" :key="drive.routeId" class="gx-home__drive" :class="{ 'is-ignored': drive.ignored }">
               <div><strong>{{ drive.date }}</strong><small>{{ drive.model }}</small></div>
-              <div><strong>{{ drive.complete ? drive.distance : 'Analyzing' }}</strong><small>{{ drive.duration }} · {{ drive.engaged }} engaged</small></div>
+              <div><strong>{{ drive.complete ? drive.distance : 'Analyzing' }}</strong><small>{{ drive.duration }} Â· {{ drive.engaged }} engaged</small></div>
               <div><small>{{ drive.ignored ? 'Excluded from totals' : drive.complete ? 'Included in totals' : 'Waiting for analysis' }}</small>
                 <button type="button" class="gx-home__link" :inert="drives.busy" :aria-busy="drives.busy || undefined" @click="ignoreDrive(drive)">
                   {{ drive.ignored ? 'Include in stats' : 'Ignore drive stats' }}</button></div>
@@ -230,7 +234,7 @@ export const Home = {
             <div v-else class="gx-home__model-layout"><div class="gx-home__model-donut" :style="driving.modelStyle"></div>
               <div><div v-for="model in driving.models" :key="model.name" class="gx-home__model-row">
                 <span class="gx-home__swatch" :style="{ background: model.color }"></span>
-                <div><strong>{{ model.name }}</strong><small>{{ counted(model.drives, "drive") }} · {{ model.distance }}</small></div></div></div></div>
+                <div><strong>{{ model.name }}</strong><small>{{ counted(model.drives, "drive") }} Â· {{ model.distance }}</small></div></div></div></div>
           </section>
         </template>
         <div class="gx-home__section-title"><span></span>Your device</div>

@@ -42,6 +42,7 @@ from openpilot.tools.replay.display_clock import BOOT_TIME_SERVICES
 from opendbc.car.structs import car as car_schema
 from openpilot.starpilot.ui.device_state import DeviceRequest, DeviceState
 from openpilot.starpilot.ui.home_state import HomeMode, HomeState
+from openpilot.starpilot.ui.history_view import HistoryView
 from openpilot.starpilot.models.jetlink_status import JetlinkStatusFeed
 from openpilot.starpilot.ui.onroad_state import conditional_lead_from_message
 from openpilot.starpilot.ui.onroad_state import (AlertSize, BorderSignals, ObservationKind, OnroadAlert,
@@ -130,6 +131,21 @@ def display_message(sm: Any, service: str, now_ns: int, *, after_frame: int = 0)
       # Account for qlog decimation during replay.
       max_age_ns = max(max_age_ns, min(1_000_000_000, int(2e9 * spec.decimation / spec.frequency)))
   return _message_at_age(sm, service, now_ns, after_frame, max_age_ns)
+
+
+def display_axis_message(sm: Any, now_ns: int, *, after_frame: int = 0) -> Any | None:
+  """Read-only pixels use the display frame window, never control authority."""
+  state = display_message(sm, 'aolAxisState', now_ns, after_frame=after_frame)
+  if state is None:
+    return None
+  try:
+    observed, until = int(state.observedMonoTime), int(state.validUntilMonoTime)
+    if (not state.qualified or not state.sessionId or not 0 < observed <= int(sm.logMonoTime['aolAxisState']) <= now_ns or
+        now_ns - observed > 200_000_000 or until < observed):
+      return None
+  except (AttributeError, TypeError, ValueError):
+    return None
+  return state
 
 
 def current_curve_message(sm: Any, now_ns: int, *, after_frame: int = 0) -> Any | None:
@@ -324,6 +340,7 @@ class RuntimeSnapshotAdapter:
     self._stopped_timer = StoppedTimer()
     self._replay_stopped_history = False
     self._developer_metrics = DeveloperMetrics()
+    self._history_view = HistoryView()
     self._reverse_driver_camera = ReverseDriverCamera()
     self._slc_sign_cache: tuple[int, tuple[int, int], str, SpeedLimitObservation] | None = None
     self._mono_clock, self._boot_clock = mono_clock, boot_clock
@@ -612,7 +629,7 @@ class RuntimeSnapshotAdapter:
       self._slc_sign_cache = None
     if (slc is not None and (slc.enabled or slc.displayOnly) and observation.kind != ObservationKind.VALID and
         not retaining_limit(observation)):
-      # SLC is on but has no limit right now: keep the limit half of the card (as "–")
+      # SLC is on but has no limit right now: keep the limit half of the card (as "â€“")
       # instead of letting it come and go with the source.
       observation = SpeedLimitObservation(kind=ObservationKind.STALE, source=observation.source, status=observation.status,
                                           source_readings=observation.source_readings)
@@ -655,11 +672,11 @@ class RuntimeSnapshotAdapter:
     if started and any(placement(self._customization_value, 'large', key)['enabled']
                        for key in ('telemetry_overlay', 'telemetry_wheel')):
       telemetry = observe_telemetry(
-        current_message(sm, 'carState', now_ns, after_frame=after),
-        current_message(sm, 'carControl', now_ns, after_frame=after),
-        current_message(sm, 'controlsState', now_ns, after_frame=after),
-        current_message(sm, 'carOutput', now_ns, after_frame=after),
-        current_message(sm, 'longitudinalPlan', now_ns, after_frame=after))
+        display_message(sm, 'carState', now_ns, after_frame=after),
+        display_message(sm, 'carControl', now_ns, after_frame=after),
+        display_message(sm, 'controlsState', now_ns, after_frame=after),
+        display_message(sm, 'carOutput', now_ns, after_frame=after),
+        display_message(sm, 'longitudinalPlan', now_ns, after_frame=after))
     from openpilot.starpilot.ui.brake_lights import observe as observe_brake_lights
     lamp_companion = display_message(sm, 'starpilotCarState', now_ns, after_frame=after) if started else None
     brake_lights = observe_brake_lights(cp, display_car, lamp_companion,
@@ -684,7 +701,8 @@ class RuntimeSnapshotAdapter:
                          wheel_acceleration=observe_wheel_acceleration(display_car),
                          steering_angle_deg=observe_wheel_angle(display_car),
                          lateral_active=display_lat_active, longitudinal_active=display_long_active,
-                         lateral_standstill_ready=lateral_ready(cp, display_car if display_car_valid else None, display_control, axis),
+                         lateral_standstill_ready=lateral_ready(cp, display_car if display_car_valid else None, display_control,
+                           display_axis_message(sm, now_ns, after_frame=after) if started and getattr(ui, 'aol_runtime', False) else None),
                          longitudinal_overridden=longitudinal_overridden,
                          driver_override_active=bool(display_car_valid and (
                            display_lat_active and getattr(display_car, 'steeringPressed', False) or
@@ -741,7 +759,8 @@ class RuntimeSnapshotAdapter:
                            HomeMode.CONDITIONAL_CHILL if self._conditional_choice is ModeChoice.CCM else
                            HomeMode.EXPERIMENTAL if experimental else HomeMode.CHILL),
                      experimental_enabled=experimental, experimental_available=bool(ui.has_longitudinal_control),
-                     stats=None, paired=bool(ui.prime_state.is_paired()), network=network, network_strength=strength,
+                     stats=self._history_view.snapshot(metric=bool(ui.is_metric), offroad=not ui.started),
+                     paired=bool(ui.prime_state.is_paired()), network=network, network_strength=strength,
                      temperature_c=device.maxTempC if device is not None else None, metric=bool(ui.is_metric),
                      temperature_high=device is not None and device.thermalStatus != log.DeviceState.ThermalStatus.ok,
                      vehicle_online=panda_connected, connection=connection,

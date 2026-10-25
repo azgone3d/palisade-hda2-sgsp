@@ -262,6 +262,11 @@ class DriveStatsOwner:
   def _run(self):
     if not self._allowed():
       return
+    if self.store == galaxy_storage_root() / 'drive-stats.json':
+      from openpilot.starpilot.galaxy.account_history import refresh_history
+      refresh_history()
+      if not self._allowed():
+        return
     assert self.root is not None
     try:
       inventory = self.history.snapshot()
@@ -501,7 +506,11 @@ class DriveStatsOwner:
     def public(record):
       return {key: value for key, value in record.items() if key not in ('sourceSignature', 'sourceManifest')}
     included_recent = [record for record in recent if not record['ignored']]
-    return {'schemaVersion': SCHEMA_VERSION, 'isMetric': is_metric,
+    from openpilot.starpilot.galaxy.account_history import read_history
+    account = read_history() if self.store == galaxy_storage_root() / 'drive-stats.json' else None
+    if account:
+      account = {key: account[key] for key in ('provider', 'fetchedAt', 'stats')}
+    return {'schemaVersion': SCHEMA_VERSION, 'isMetric': is_metric, 'accountHistory': account,
             'analysis': {'running': running, 'pending': pending, 'state': state,
                          'failed': len(self._failures),
                          'quarantined': sum(f['attempts'] >= MAX_RETRY_ATTEMPTS or

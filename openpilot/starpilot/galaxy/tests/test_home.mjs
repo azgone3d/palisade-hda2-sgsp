@@ -53,6 +53,12 @@ const drives = { schemaVersion: 1, isMetric: true, analysis: { running: false, p
   lastDrive: route, recentDrives: [route], records: [{ id: "longestDrive", label: "Longest drive", value: 12000, unit: "m" }],
   models: [{ name: "Chestnut", distanceMeters: 12000, durationSeconds: 3600, drives: 1 }] }
 const driving = driveSummary({ status: "ready", data: drives })
+const accountDriving = driveSummary({ status: "ready", data: { ...drives, isMetric: false,
+  accountHistory: { provider: "comma", fetchedAt: 1792950000,
+    stats: { all: { distance: 4200.9, minutes: 12806, routes: 772 } } } } })
+assert.equal(accountDriving.account.drives, 772)
+assert.equal(accountDriving.account.distance, "4200.9 mi")
+assert.equal(accountDriving.totals.drives, drives.totals.drives)
 assert.equal(driving.last.distance, "12.0 km")
 assert.equal(driving.last.distracted, "Unavailable")
 assert.equal(driving.week.days[0].height, 0)
