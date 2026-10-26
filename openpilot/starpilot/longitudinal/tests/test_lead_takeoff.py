@@ -36,6 +36,34 @@ def test_departing_lead_breakaway_holds_profile_ceiling_only_while_stationary():
   assert LeadTakeoff().step(True, frame(leads=(departing,), acceleration_max=2., blocked=True), 0., True) == (0., True)
 
 
+def test_palisade_opt_out_does_not_jump_to_profile_ceiling_or_override_braking():
+  departing = replace(frame().leads[0], distance=5., speed=1., acceleration=.5)
+  sample = frame(leads=(departing,), acceleration_max=2., full_breakaway=False)
+  target, stop = LeadTakeoff().step(True, sample, .2, False)
+  assert .2 <= target <= .35 and not stop
+  assert LeadTakeoff().step(True, replace(sample, mpc_accel=-.2), -.2, True) == (-.2, True)
+  assert LeadTakeoff().step(True, replace(sample, blocked=True), -.5, True) == (-.5, True)
+  assert LeadTakeoff().step(True, sample, .8, False)[0] >= .8
+
+
+@pytest.mark.parametrize('profile', ['exact', 'unmarked', 'other_identity'])
+def test_only_qualified_palisade_hda2_projection_disables_ceiling_boost(profile):
+  from openpilot.starpilot.aol.tests.test_palisade_alpha_controls import alpha_params
+  from openpilot.starpilot.longitudinal.tests.test_conditional_handoff import Frame as NativeFrame
+  cp = alpha_params()
+  if profile == 'unmarked':
+    cp.alternativeExperience = 0
+  elif profile == 'other_identity':
+    cp.carFingerprint = 'other'
+  sm = NativeFrame()
+  sm.recv_time = dict.fromkeys(sm, (NOW-5_000_000)/1e9)
+  observed = project(sm, cp, now_ns=NOW, drive_id=DRIVE,
+    stop_plan=StopPlan(model_ns=NOW-5_000_000, takeoff_light_observed=True),
+    acceleration_max=2., mpc_accel=0., follow_seconds=1.45)
+  assert observed is not None
+  assert observed.full_breakaway == (profile != 'exact')
+
+
 def test_creep_confirmation_and_profile_cap_remain_effective():
   policy = LeadTakeoff()
   lead = replace(frame().leads[0], distance=6., speed=.3, acceleration=.1)

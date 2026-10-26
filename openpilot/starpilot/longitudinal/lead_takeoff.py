@@ -44,6 +44,7 @@ class Frame:
   follow_seconds: float
   leads: tuple[Lead, ...]
   blocked: bool = False
+  full_breakaway: bool = True
 
 
 def confident(lead, speed):
@@ -147,9 +148,9 @@ class LeadTakeoff:
       return target, should_stop
     bounded = min(floor, f.acceleration_max)
     result = max(target, bounded)
-    # Modern stop threshold is .1 m/s²: a lower saved/physical cap cannot prove release.
+    # Modern stop threshold is .1 m/sÂ²: a lower saved/physical cap cannot prove release.
     output_stop = False if bounded >= .1 else should_stop
-    if (f.standstill and not output_stop and lead.distance >= BREAKAWAY_MIN_DISTANCE and
+    if (f.full_breakaway and f.standstill and not output_stop and lead.distance >= BREAKAWAY_MIN_DISTANCE and
         lead.speed >= BREAKAWAY_MIN_LEAD_SPEED and lead.speed - f.speed >= .25 and lead.acceleration >= -.2):
       result = max(result, f.acceleration_max)
     if self.previous_should_stop and not output_stop and release_ready:
@@ -182,9 +183,13 @@ def project(sm, cp, *, now_ns, drive_id, stop_plan, acceleration_max, mpc_accel,
                    any(radar.radar and radar.distance <= 18 and abs(radar.lateral) >= 1.5 and
                        abs(radar.distance - float(lead.x[0])) <= 4. for radar in leads)
                    for lead in model.leadsV3)
+    from opendbc.car.hyundai.blended_stock_aol import qualified_alpha
+    palisade_hda2 = (getattr(cp, 'carFingerprint', '') == 'HYUNDAI_PALISADE_2023' and
+                    qualified_alpha(cp, marked_only=True) and cp.safetyConfigs[0].safetyParam == 0x2014)
     return Frame(now_ns, int(sm.logMonoTime['modelV2']), drive_id, bool(eligible), bool(car.standstill),
                  float(car.vEgo), float(model.action.desiredAcceleration), float(mpc_accel), float(acceleration_max),
                  float(follow_seconds), leads, bool(blocked or not light_current or stop_plan.takeoff_light or
-                                                  stop_plan.forcing or stop_plan.should_stop or conflict))
+                                                  stop_plan.forcing or stop_plan.should_stop or conflict),
+                 full_breakaway=not palisade_hda2)
   except (AttributeError, IndexError, KeyError, TypeError, ValueError, OverflowError, RuntimeError):
     return None
