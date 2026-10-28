@@ -21,6 +21,7 @@ from openpilot.starpilot.ui.preview_shell import reference_onroad
 from openpilot.starpilot.ui.runtime_snapshot import RuntimeSnapshotAdapter
 from openpilot.starpilot.ui.shell import ShellMode
 from openpilot.starpilot.ui.tests.test_runtime_snapshot import NOW, ui_fake
+from openpilot.starpilot.ui.tests.test_onroad_torque_draw import record_gpu
 
 
 def rgba(color: rl.Color) -> tuple[int, int, int, int]:
@@ -29,6 +30,10 @@ def rgba(color: rl.Color) -> tuple[int, int, int, int]:
 
 class TestOnroadAxes(unittest.TestCase):
   def setUp(self):
+    for name in ('draw_rectangle_rounded', 'draw_rectangle_rounded_lines_ex', 'draw_circle', 'draw_ring'):
+      self.enterContext(patch('openpilot.starpilot.ui.speed_limit_widget.rl.' + name, new_callable=Mock))
+    for name in ('circle', 'arrow', 'outline', 'confirmation'):
+      self.enterContext(patch('openpilot.starpilot.ui.speed_limit_shapes.SpeedLimitShapes.' + name, new_callable=Mock))
     self.ui = ui_fake()
     self.ui.CP = NS(carFingerprint='', openpilotLongitudinalControl=True, pcmCruise=False)
     car = self.ui.sm["carState"]
@@ -59,8 +64,9 @@ class TestOnroadAxes(unittest.TestCase):
         fonts.horizontal_ink.return_value = (0, 20)
         with patch("openpilot.starpilot.ui.onroad_large_widgets.draw_control_card"), patch.object(rl, "draw_line_ex"):
           UnifiedSpeedWidget(fonts).render(rl.Rectangle(30, 30, 1800, 1020), state)
-        label_color = fonts.draw.call_args_list[0].args[-1]
-        self.assertEqual(rgba(label_color), (172, 190, 203, 255))
+        from openpilot.starpilot.ui.tests.test_unified_speed_native import foreground_calls
+        label_color = foreground_calls(fonts.draw)[0].args[-1]
+        self.assertEqual(rgba(label_color), (190, 208, 202, 255))
         compact = CompactHudRenderer(fonts, Path("/unused"))
         with patch.object(compact, "prepare"), patch("openpilot.starpilot.ui.onroad_compact_widgets.rl.draw_texture_pro"), \
              patch("openpilot.starpilot.ui.onroad_compact_widgets.rl.draw_circle_gradient"):
@@ -304,7 +310,8 @@ class TestOnroadAxes(unittest.TestCase):
     fonts.horizontal_ink.return_value = (0, 20)
     with patch("openpilot.starpilot.ui.onroad_large_widgets.draw_control_card"), patch.object(rl, "draw_line_ex"):
       UnifiedSpeedWidget(fonts).render(rl.Rectangle(30, 30, 1800, 1020), state)
-    self.assertEqual(rgba(fonts.draw.call_args_list[0].args[-1]), (172, 190, 203, 255))
+    from openpilot.starpilot.ui.tests.test_unified_speed_native import foreground_calls
+    self.assertEqual(rgba(foreground_calls(fonts.draw)[0].args[-1]), (190, 208, 202, 255))
     compact = CompactHudRenderer(fonts, Path("/unused"))
     with patch("openpilot.starpilot.ui.onroad_compact_widgets.rl.draw_circle_gradient"):
       compact.render(state)
@@ -333,7 +340,9 @@ class TestOnroadAxes(unittest.TestCase):
     self.assertEqual(requests, [])
     fonts = Mock()
     fonts.measure.return_value = NS(width=20, height=10)
+    fonts.vertical_ink.return_value = (0, 10)
     compact = CompactHudRenderer(fonts, Path("/unused"))
+    fonts.horizontal_ink.return_value = (0, 20)
     with patch.object(compact, "prepare"), patch("openpilot.starpilot.ui.onroad_compact_widgets.rl.draw_texture_pro"), \
          patch("openpilot.starpilot.ui.onroad_compact_widgets.rl.draw_circle_gradient"):
       compact.render(active)
@@ -347,13 +356,12 @@ class TestOnroadAxes(unittest.TestCase):
     self.assertEqual(compact._set_speed_opacity(stale, compact._last_cruise_ns + 150_000_001), 0)
     self.assertEqual(compact._set_speed_alpha.x, 0)
     torque = TorqueBarWidget()
-    with patch("openpilot.starpilot.ui.onroad_torque.draw_polygon") as draw, \
-         patch("openpilot.starpilot.ui.onroad_torque.rl.draw_circle"):
+    with record_gpu() as gpu:
       torque.render(rl.Rectangle(0, 0, 476, 240), active, 536)
       self.assertGreater(torque._alpha_filter.x, 0)
-      draw.reset_mock()
+      gpu.frames.clear()
       torque.render(rl.Rectangle(0, 0, 476, 240), stale, 536)
-      draw.assert_not_called()
+      self.assertFalse(gpu.frames)
     self.assertEqual(torque._alpha_filter.x, 0)
 
   def test_missing_actual_torque_output_stays_hidden_with_active_axes(self):
@@ -362,9 +370,9 @@ class TestOnroadAxes(unittest.TestCase):
     self.assertTrue(state.lateral_active)
     self.assertFalse(state.torque_source_available)
     torque = TorqueBarWidget()
-    with patch("openpilot.starpilot.ui.onroad_torque.draw_polygon") as draw:
+    with record_gpu() as gpu:
       torque.render(rl.Rectangle(0, 0, 476, 240), state, 536)
-    draw.assert_not_called()
+    self.assertFalse(gpu.frames or gpu.loads)
     self.assertEqual(torque._alpha_filter.x, 0)
 
   def test_pressed_control_cancels_on_axis_transition_even_with_fresh_transport(self):
@@ -388,3 +396,4 @@ class TestOnroadAxes(unittest.TestCase):
 
 if __name__ == "__main__":
   unittest.main()
+

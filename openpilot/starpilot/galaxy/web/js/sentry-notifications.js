@@ -1,4 +1,5 @@
 import { GxNotice } from "./notice.js"
+import { reportSave } from "./save-feedback.js"
 export const channels = ["webPush", "discord", "webhook", "ntfy"]
 export const labels = { webPush: "Browser push", discord: "Discord", webhook: "General webhook", ntfy: "ntfy" }
 
@@ -60,7 +61,7 @@ export const SentryNotifications = {
   components: { GxNotice },
   name: "SentryNotifications",
   props: { mode: { type: String, required: true }, unauthorized: { type: Function, required: true } },
-  data: () => ({ channels, labels, notifications: null, notificationBusy: false, notificationError: "",
+  data: () => ({ nativePush: !!window.StarPilotApp?.sentryPush, pushState: {}, testPoll: null, relayUrl: '', channels, labels, notifications: null, notificationBusy: false, notificationError: "",
     drafts: Object.fromEntries(channels.map(name => [name, { url: "", token: "" }])) }),
   created() { this.client = new NotificationClient({ publish: update => Object.assign(this.$data, update), unauthorized: this.unauthorized }) },
   mounted() {
@@ -68,19 +69,37 @@ export const SentryNotifications = {
     document.addEventListener("visibilitychange", this.visibility)
     this.start()
   },
-  beforeUnmount() { this.client.stop(); clearInterval(this.poll); document.removeEventListener("visibilitychange", this.visibility) },
+  beforeUnmount() { clearInterval(this.testPoll); this.client.stop(); clearInterval(this.poll); document.removeEventListener("visibilitychange", this.visibility) },
   methods: {
+    reportSave,
+    refreshPush() { try { this.pushState = JSON.parse(window.StarPilotApp?.sentryPush?.() || '{}') } catch { this.pushState = {} } },
+    togglePhone() { window.StarPilotApp?.setSentryPush?.(!this.pushState.enabled); this.refreshPush(); setTimeout(() => this.client.run(), 1000) },
+    async testPhone(id) {
+      if (!await this.client.run({ action: 'test', target: 'app', id })) return
+      clearInterval(this.testPoll)
+      let attempts = 0
+      this.testPoll = setInterval(() => { if (++attempts >= 15) { clearInterval(this.testPoll); this.testPoll = null } if (!this.client.pending) this.client.run() }, 1000)
+    },
+    removePhone(id) { return this.client.run({ action: 'appUnsubscribe', id }) },
+    simulate() { return this.client.run({ action: 'simulate' }) },
+    canSimulate() { return !!window.StarPilotApp || location.protocol === 'http:' },
+    async saveRelay() {
+      if (await this.client.run({ action: 'configure', channel: 'appPush', enabled: true, url: this.relayUrl, token: '' })) this.relayUrl = ''
+    },
     start() {
       clearInterval(this.poll)
+      this.refreshPush()
       if (this.mode !== "local" || document.hidden) return
       this.client.run()
       this.poll = setInterval(() => { if (!this.notificationBusy && !this.client.pending) this.client.run() }, 5000)
     },
     async save(name, enabled) {
       const draft = this.drafts[name]
-      if (await this.client.run({ action: "configure", channel: name, enabled, url: draft.url, token: draft.token })) {
+      const saved = await this.client.run({ action: "configure", channel: name, enabled, url: draft.url, token: draft.token })
+      if (saved) {
         draft.url = ""; draft.token = ""
       }
+      return saved
     },
     test(name) { return this.client.run({ action: "test", channel: name }) },
     async forget(name) { if (await this.client.run({ action: "forget", channel: name })) { this.drafts[name].url = ""; this.drafts[name].token = "" } },
@@ -106,19 +125,37 @@ export const SentryNotifications = {
     },
   },
   template: `
-    <section class="gx-card gx-home__card" aria-label="Sentry notifications" :inert="notificationBusy" :aria-busy="notificationBusy || undefined">
-      <h2>Notifications</h2>
+    <section class="gx-card" aria-label="Sentry notifications" :inert="notificationBusy" :aria-busy="notificationBusy || undefined">
+      <div class="gx-section__header"><i class="bi bi-bell" aria-hidden="true"></i><span class="gx-section__title">Notifications</span></div><div class="gx-panel gx-stack">
       <p class="gx-note">Receive new locally recorded motion events. Notification channels work independently.</p>
       <p v-if="mode !== 'local'">Notification configuration is available on your connected device.</p>
       <template v-else>
         <GxNotice tone="danger" v-if="notificationError">{{ notificationError }}</GxNotice>
-        <p v-if="notificationBusy" class="gx-settings__save-status" role="status">Updating notifications…</p>
+        <p v-if="notificationBusy" class="gx-note" role="status">Updating notifications…</p>
         <GxNotice tone="danger" v-if="notifications?.queueFull">The notification queue is full. Some events could not be queued.</GxNotice>
         <template v-if="notifications">
           <p class="gx-note">{{ notifications.deliverySemantics }}</p>
+          <section class="gx-card gx-panel gx-stack">
+            <h3>Galaxy app phones</h3>
+            <label>HTTPS push relay URL <input v-model="relayUrl" class="gx-field" type="password" autocomplete="off" placeholder="Leave blank to keep saved URL"></label>
+            <button type="button" class="gx-btn gx-btn--tonal" @click="saveRelay">Save push relay</button>
+            <p v-if="!notifications.appPushAvailable" class="gx-note">Configure a push relay to deliver phone alerts.</p>
+            <button v-if="nativePush" type="button" class="gx-btn" :disabled="!notifications.appPushAvailable" @click="togglePhone">{{ pushState.enabled ? 'Disable phone alerts' : 'Enable phone alerts' }}</button>
+            <button v-if="notifications.appPushAvailable && pushState.registered && pushState.id" type="button" class="gx-btn" @click="testPhone(pushState.id)">Send test to this phone</button>
+            <p v-for="phone in (notifications.appSubscriptions || [])" :key="phone.id">{{ phone.label }} · {{ phone.lastResult || 'Not tested' }} · {{ phone.lastAt ? new Date(phone.lastAt * 1000).toLocaleString() : '' }}
+              <button type="button" class="gx-btn" :disabled="!notifications.appPushAvailable" @click="testPhone(phone.id)">Test</button><button type="button" class="gx-btn" @click="removePhone(phone.id)">Remove</button>
+            </p>
+            <p v-for="phone in (notifications.removedAppSubscriptions || [])" :key="phone.id">{{ phone.lastResult }}</p>
+            <button v-if="canSimulate()" class="gx-btn" @click="simulate">Simulate event</button>
+          </section>
+          <button class="gx-btn" @click="client.run({action: 'test', target: 'all'})">Test all channels</button>
           <section v-for="name in channels" :key="name" class="gx-card gx-sentry-channel">
-            <h3>{{ labels[name] }}</h3>
-            <p>{{ notifications.channels[name].enabled ? 'Enabled' : 'Disabled' }} · {{ notifications.channels[name].configured ? 'Configured' : 'Not configured' }}</p>
+            <div class="gx-section__header"><i class="bi" :class="{webPush: 'bi-bell', discord: 'bi-discord', webhook: 'bi-link-45deg', ntfy: 'bi-broadcast'}[name]" aria-hidden="true"></i><span class="gx-section__title">{{ labels[name] }}</span></div>
+            <div class="gx-panel gx-stack"><div class="gx-row gx-row--borderless"><div class="gx-row__info"><span class="gx-row__label">Enabled</span>
+              <span class="gx-row__desc">{{ notifications.channels[name].configured ? 'Configured' : 'Not configured' }}</span></div>
+              <label class="gx-switch"><input type="checkbox" role="switch" :aria-label="labels[name] + ' notifications'" :checked="notifications.channels[name].enabled"
+                :disabled="!notifications.channels[name].configured || notificationBusy"
+                @change="$event.target.checked=notifications.channels[name].enabled; reportSave(() => save(name, !notifications.channels[name].enabled))"><span class="gx-switch__track"></span><span class="gx-switch__thumb"></span></label></div>
             <p role="status">Delivery: {{ notifications.channels[name].lastState }} · Pending: {{ notifications.channels[name].pending }}</p>
             <GxNotice tone="danger" v-if="notifications.channels[name].lastError">Delivery status: {{ notifications.channels[name].lastError.replaceAll('_', ' ') }}</GxNotice>
             <div v-if="name !== 'webPush'" class="gx-sentry-channel__fields">
@@ -128,14 +165,13 @@ export const SentryNotifications = {
             <div class="gx-sentry-channel__actions gx-actions">
             <button v-if="name !== 'webPush'" class="gx-btn gx-btn--tonal" type="button" @click="save(name, true)">Save and enable</button>
             <button v-else class="gx-btn gx-btn--tonal" type="button" @click="subscribe">Subscribe this browser</button>
-            <button class="gx-btn gx-btn--tonal" type="button" :disabled="!notifications.channels[name].configured" @click="save(name, !notifications.channels[name].enabled)">{{ notifications.channels[name].enabled ? 'Disable' : 'Enable' }}</button>
             <button class="gx-btn gx-btn--tonal" type="button" :disabled="!notifications.channels[name].enabled || !notifications.channels[name].configured" @click="test(name)">Send test</button>
             <button class="gx-btn gx-btn--tonal" type="button" @click="forget(name)">Forget configuration</button>
-            </div>
+            </div></div>
           </section>
           <p v-if="notifications.subscriptionCount">Subscribed browsers: {{ notifications.subscriptionCount }}</p>
           <button v-for="(subscription, index) in notifications.subscriptions" :key="subscription.id" class="gx-btn gx-btn--tonal" type="button" @click="remove(subscription.id)">Remove browser {{ index + 1 }}</button>
         </template>
-      </template>
+      </template></div>
     </section>`,
 }

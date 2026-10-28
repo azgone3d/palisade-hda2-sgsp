@@ -98,7 +98,12 @@ def matching_turn_signal(sm, now_ns: int, *, supported: bool) -> bool:
 
 
 class TurnIntent:
-  def __init__(self):
+  def __init__(self, params=None, cp=None):
+    from openpilot.starpilot.lateral.auto_lane_change import steering_capable
+    from openpilot.starpilot.lateral.lane_change_preferences import LiveLaneChangePolicy
+    self.guidance = LiveLaneChangePolicy(params) if params is not None else None
+    self.steering_capable = steering_capable(cp)
+    self.signal_stop_hold = False
     self.key = None
     self.stop_hold = False
 
@@ -108,7 +113,7 @@ class TurnIntent:
     if key != self.key:
       self.key, self.stop_hold = key, False
     if nav is None:
-      return current_desire
+      return self.signal_desire(sm, now_ns, current_desire, supported=supported, model_stop=model_stop)
     cs = sm['carState']
     try:
       stamp, plan = sm.logMonoTime['longitudinalPlan'], sm['longitudinalPlan']
@@ -123,4 +128,41 @@ class TurnIntent:
       self.stop_hold = True
     if self.stop_hold or not plan_valid:
       return current_desire
-    return turn_desire(sm, now_ns, current_desire, supported=supported)
+    selected = turn_desire(sm, now_ns, current_desire, supported=supported)
+    if selected != log.Desire.none:
+      return selected
+    return self.signal_desire(sm, now_ns, current_desire, supported=supported, model_stop=model_stop)
+
+  def signal_desire(self, sm, now_ns, current_desire, *, supported, model_stop):
+    if self.guidance is None:
+      return current_desire
+    try:
+      cs, cc, device, plan = (sm[name] for name in ('carState', 'carControl', 'deviceState', 'longitudinalPlan'))
+      signaling = bool(cs.leftBlinker or cs.rightBlinker)
+      policy = self.guidance.sample(now_ns, signaling=signaling,
+                                    maneuver_active=current_desire != log.Desire.none)
+      if not signaling or cs.standstill:
+        self.signal_stop_hold = False
+      if model_stop or plan.shouldStop:
+        self.signal_stop_hold = True
+      if (not supported or not self.steering_capable or not policy.turn_signal_guidance or
+          current_desire != log.Desire.none or self.signal_stop_hold or not cc.latActive or
+          not cs.canValid or cs.canTimeout or str(cs.gearShifter) != 'drive' or cs.standstill or
+          not math.isfinite(cs.vEgo) or not 0.1 < cs.vEgo < 20 * CV.MPH_TO_MS or
+          cs.leftBlinker == cs.rightBlinker or not device.started):
+        return current_desire
+      for service, age in (('carState', 100_000_000), ('carControl', 100_000_000),
+                           ('longitudinalPlan', 150_000_000), ('deviceState', 2_000_000_000)):
+        stamp = sm.logMonoTime[service]
+        if (not sm.valid[service] or not sm.alive[service] or
+            not 0 < device.startedMonoTime <= stamp <= now_ns <= stamp + age):
+          return current_desire
+      if not device.startedMonoTime <= plan.modelMonoTime <= sm.logMonoTime['longitudinalPlan']:
+        return current_desire
+      if cs.leftBlinker and not cs.leftBlindspot:
+        return log.Desire.turnLeft
+      if cs.rightBlinker and not cs.rightBlindspot:
+        return log.Desire.turnRight
+    except (KeyError, AttributeError, TypeError, ValueError):
+      pass
+    return current_desire

@@ -57,6 +57,27 @@ class TestAngleCore(unittest.TestCase):
     self.assertTrue(resumed.active)
     self.assertLess(abs(resumed.path_angle), .02)
 
+  def test_retained_aol_keeps_active_after_release_and_tracking_error(self):
+    for stalled in (False, True):
+      core = AngleController(recovery_blips=False)
+      for tick in range(100):
+        inputs = Inputs(True, 15., 0., .006 if stalled else .001,
+                        steering_pressed=not stalled and tick < 20)
+        result = core.step(inputs)
+        self.assertTrue(result.active, (stalled, tick))
+        self.assertLessEqual(abs(result.path_angle / (15. * limits.GAIN_MIN)), limits.LATERAL_ACCEL / 15. ** 2)
+        self.assertEqual(core.blip_frames, 0)
+
+  def test_retained_aol_preserves_human_turn_and_invalid_input_neutral(self):
+    core = AngleController(recovery_blips=False)
+    for _ in range(61):
+      result = core.step(Inputs(True, 15., 0., .001, steering_pressed=True, steering_angle=60.))
+    self.assertEqual(result, Command())
+    self.assertEqual(core.step(Inputs(True, 15., 0., math.nan)), Command())
+    self.assertEqual(core.step(Inputs(False, 15., 0., .001)), Command())
+    # Infeasible measured-curvature and actuator envelopes must still go neutral.
+    self.assertEqual(core.step(Inputs(True, 15., .1, .001)), Command())
+
   def test_pinned_bp7_pure_angle_and_actual_control_bytes_with_documented_limits(self):
     builders = reference.builders()
     bus = SimpleNamespace(main=0)
@@ -171,7 +192,7 @@ class TestAngleTrim(unittest.TestCase):
     for changes in ({"active": False}, {"lane_change": True}, {"steering_pressed": True}):
       trim = LaneCenterTrim()
       trim.update(0., 15., original, config, active=True, lane_change=False)
-      flags = dict(active=True, lane_change=False, steering_pressed=False)
+      flags = {"active": True, "lane_change": False, "steering_pressed": False}
       flags.update(changes)
       self.assertEqual(trim.update(.001, 15., original, config, **flags), .001)
       self.assertEqual(trim.correction, 0.)
@@ -211,3 +232,19 @@ class TestAngleTrim(unittest.TestCase):
           else:
             previous = 0.
             self.assertEqual(core.trim.correction, 0.)
+
+
+class TestAngleInputParity(unittest.TestCase):
+  def test_missing_model_fallback_matches_pinned_bp7(self):
+    for identity in sorted(CLASSIC | CANFD):
+      gains = (.95, .95) if identity in TRUCKS else ((1., 1.05) if identity in CANFD else (1., 1.15))
+      for speed in (5., 8.):
+        for direction in (-1, 1):
+          adapted = AngleController(low_gain=gains[0], high_gain=gains[1])
+          upstream = reference.Angle(identity)
+          for _ in range(20):
+            inputs = Inputs(True, speed, direction * .001, direction * .001)
+            command, expected = adapted.step(inputs), upstream.step(inputs)
+            self.assertTrue(command.active)
+            self.assertAlmostEqual(command.path_angle, expected.path_angle, places=12)
+            self.assertEqual(command.precision, expected.precision_type)

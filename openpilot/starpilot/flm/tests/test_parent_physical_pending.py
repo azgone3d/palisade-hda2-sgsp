@@ -3,6 +3,7 @@
 The SM/native world is declared synthetic. PoseCalibrator, observer, wire readers,
 control/output joins and the actual parent loop/collector are not replaced.
 """
+from openpilot.starpilot.flm.tests._drain_fixture import separate_drain_fixture
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest import mock
@@ -42,6 +43,7 @@ def exercise(*, failure=None, polls=86, pending=True):
       'b' * 64, (0., 0., 0.), calibration_generation='c' * 32)
 
   def update(timeout=None):
+    sm.updated = dict.fromkeys(sm.messages, False)
     if timeout == 0:
       return
     loop[0] += 1
@@ -56,6 +58,9 @@ def exercise(*, failure=None, polls=86, pending=True):
     sm['carState'].canValid = True
     sm['deviceMotion'].inputsOK = True
     sm['deviceMotion'].timestamp = pose
+    sm.logMonoTime['deviceMotion'] = pose
+    sm.updated['deviceMotion'] = not right
+    sm.updated['carState'] = sm.updated['lateralDelay'] = True
     sm.recv_time['deviceMotion'] = (pose + 2_000_000) / 1e9
     sm.logMonoTime['carState'] = state
     sm.logMonoTime['lateralDelay'] = clock[0]
@@ -114,7 +119,7 @@ def exercise(*, failure=None, polls=86, pending=True):
   fitter.poll.return_value = None
   persistence = mock.Mock()
   with mock.patch.object(steerlearnerd, 'FullrateCollector', side_effect=collector_factory), \
-       mock.patch.object(steerlearnerd, 'drain', side_effect=drain), \
+       mock.patch.object(steerlearnerd, 'drain_pair', side_effect=separate_drain_fixture(drain)), \
        mock.patch('openpilot.starpilot.flm.native_health.current_native_health', side_effect=lambda *args: native[0]), \
        mock.patch('openpilot.starpilot.flm.runtime_adapter_registry.time.monotonic_ns', side_effect=lambda: clock[0]), \
        mock.patch('openpilot.starpilot.flm.runtime_adapter_registry.time.clock_gettime_ns', side_effect=boot_clock):

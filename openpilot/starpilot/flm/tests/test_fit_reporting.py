@@ -1,4 +1,5 @@
 """Actual optional publisher cache reports child rejection without admission."""
+from openpilot.starpilot.flm.tests._drain_fixture import separate_drain_fixture
 from types import SimpleNamespace
 from unittest import mock
 
@@ -21,7 +22,8 @@ KEY = ('feedforward', 'low', 'steady')
 ))
 @pytest.mark.parametrize('blocked', (None, 'native', 'physical_context', 'settings'))
 def test_actual_cached_child_without_profile_reports_reason_without_admission(status, reason, blocked):
-  adapter = mock.Mock(event_collection=False, raw_storage=False)
+  adapter = mock.Mock(event_collection=False, raw_storage=False,
+                      source_plant_protocol=None, original_feedback_archive=None)
   adapter.prepare_control.side_effect = lambda evidence: evidence
   adapter.install_fit.return_value = False
   collector = FullrateCollector(adapter)
@@ -34,9 +36,11 @@ def test_actual_cached_child_without_profile_reports_reason_without_admission(st
                              baseline_revision='baseline', controller_revision='controller', turn_assist=False)
   report = {'status': status, 'reason': reason, 'profile': None, 'validation': None}
   tick = [-1]
-  sm = mock.Mock()
+  sm = mock.Mock(updated={'deviceMotion': False}, logMonoTime={'deviceMotion': 0})
 
-  def update():
+  def update(timeout=None):
+    if timeout == 0:
+      return
     tick[0] += 1
     if tick[0] == 3:
       raise StopIteration
@@ -75,7 +79,7 @@ def test_actual_cached_child_without_profile_reports_reason_without_admission(st
     return source
 
   with mock.patch.object(steerlearnerd, 'FullrateCollector', return_value=collector), \
-       mock.patch.object(steerlearnerd, 'drain', drain), \
+       mock.patch.object(steerlearnerd, 'drain_pair', separate_drain_fixture(drain)), \
        mock.patch.object(steerlearnerd, 'read_control', return_value=evidence), \
        mock.patch.object(collector, 'control'), mock.patch.object(collector, 'physical'), \
        mock.patch.object(collector, 'job_snapshot', side_effect=[{'job': 'bounded'}, None, None]), \

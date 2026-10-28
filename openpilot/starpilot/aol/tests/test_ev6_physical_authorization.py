@@ -17,8 +17,12 @@ from openpilot.starpilot.car.hyundai.ev6_intent import Ev6CardIntent
 def ev6_params():
   # Factory remains stock. The actual captured/UDS prepublication owner alone promotes alpha.
   from openpilot.starpilot.tests.test_ev6_startup import TestEV6Startup
-  ci, _, _ = TestEV6Startup().exercise(mode='sent_restore')
-  return ci.CP.as_reader().as_builder()
+  ci, holder, _ = TestEV6Startup().exercise(mode='sent_restore')
+  try:
+    assert ci.CP.openpilotLongitudinalControl and ci.CP.safetyConfigs[-1].safetyParam == 0x15
+    return ci.CP.as_reader().as_builder()
+  finally:
+    holder.close()
 
 
 class TestEv6PhysicalAuthorization(unittest.TestCase):
@@ -147,7 +151,7 @@ class TestEv6ConfiguredDesire(unittest.TestCase):
         self.assertEqual(owner.physical.authorized, lkas_action == AOL_TOGGLE)
         self.assertFalse(owner.allowed_latch)  # Physical release alone never forces desire.
         self.sample(owner, [], active=True)
-        self.assertEqual(owner.allowed_latch, lkas_action == AOL_TOGGLE)
+        self.assertTrue(owner.allowed_latch)  # A successful fresh full engagement arms either configured mode.
 
   def test_raw_manual_off_wins_over_full_engagement_without_net_button_event(self):
     owner = self.owner(main=AOL_TOGGLE)

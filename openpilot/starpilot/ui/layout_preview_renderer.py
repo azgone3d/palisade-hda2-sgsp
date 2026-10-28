@@ -1,5 +1,7 @@
 """Parked onroad layout preview using the same native view as the driving UI."""
 
+from typing import cast
+
 from pathlib import Path
 import json
 import math
@@ -15,7 +17,8 @@ import pyray as rl
 
 from openpilot.starpilot.ui.layout_preview_transport import SCENES, validate_preview_document
 from openpilot.starpilot.ui.developer_preview import OnroadVisualPreview
-from openpilot.starpilot.ui.onroad_customization import CAMERA_WIDGETS, PROFILES, RUNTIME_PREVIEW_WIDGETS, placement, validate_document, widget_size
+from openpilot.starpilot.ui.onroad_customization import (CAMERA_WIDGETS, PROFILES, ROAD_BASE_WIDTH, RUNTIME_PREVIEW_WIDGETS, fit_to_road, placement,
+                                                         validate_document, widget_size)
 from openpilot.starpilot.ui.onroad_widget_style import draw_widget_frame
 from openpilot.starpilot.curve_speed.status import CurveObservation
 from openpilot.starpilot.ui.telemetry_observation import TelemetryObservation
@@ -71,18 +74,20 @@ def sample_state(scene: str, document: dict) -> OnroadState:
   # cruise-off/lateral-only/longitudinal-only scenes change engagement.
   lateral = scene not in ('long_only', 'slc_disengaged')
   longitudinal = scene not in ('aol', 'slc_disengaged')
+  pending = scene in ('slc_pending', 'slc_notice')
   state = OnroadState(engaged=lateral or longitudinal, camera_available=False,
                      speed_mps=0.0 if scene in ("cem_lead", "stopped") else 22.0, cruise_kph=88.0,
                      stopped_duration_s=PREVIEW_DURATION_S if scene == "stopped" else None,
-                     speed_limit=SpeedLimitObservation(kind=ObservationKind.VALID, source="dashboard", speed_limit_mps=20.0,
+                     speed_limit=SpeedLimitObservation(kind=ObservationKind.VALID, source="dashboard",
+                                                       speed_limit_mps=22.0 if pending else 20.0,
                                                        accepted_speed_limit_mps=20.0, accepted_source='dashboard',
                                                        accepted_adjusted_limit_mps=22.0, effective_cluster_target_mps=22.0,
                                                        offset_mps=2.0, limiting_max_set=True,
-                                                       pending_adjusted_limit_mps=24.0 if scene == 'slc_pending' else None,
-                                                       presentation_adjusted_limit_mps=24.0 if scene == 'slc_pending' else 22.0,
-                                                       pending_speed_limit_mps=22.0 if scene == "slc_pending" else None,
+                                                       pending_adjusted_limit_mps=24.0 if pending else None,
+                                                       presentation_adjusted_limit_mps=24.0 if pending else 22.0,
+                                                       pending_speed_limit_mps=22.0 if pending else None,
                                                        session_id="preview",
-                                                       source_readings=(SourceReading('dashboard', True, 'valid', 20),
+                                                       source_readings=(SourceReading('dashboard', True, 'valid', 22 if pending else 20),
                                                                         SourceReading('map', True, 'valid', 20),
                                                                         SourceReading('vision', True, 'unknown')),
                                                        decision_id=1, presentation_id=1, action_enabled=longitudinal),
@@ -92,7 +97,7 @@ def sample_state(scene: str, document: dict) -> OnroadState:
                      metric=False, experimental_available=True,
                      experimental_enabled=scene == "experimental" or scene in CEM_SCENE_REASONS, lateral_active=lateral,
                      longitudinal_active=longitudinal, stock_cruise_active=False,
-                     slc_system_long_available=longitudinal, torque_utilization=0.78 if lateral else 0.0,
+                     slc_system_long_available=longitudinal, slc_wheel_confirmation_available=longitudinal, torque_utilization=0.78 if lateral else 0.0,
                      telemetry=TelemetryObservation(angle=5.1, desired_lateral=-.11 if lateral else None,
                        actual_lateral=-.08 if lateral else None, target_torque=.18 if lateral else 0.,
                        applied_torque=.17 if lateral else 0., driver_torque=False, gas_pressed=False,
@@ -100,6 +105,7 @@ def sample_state(scene: str, document: dict) -> OnroadState:
                        target_acceleration=-.3 if scene == 'braking' else 0., command_acceleration=-.25 if scene == 'braking' else 0.,
                        output_acceleration=-.2 if scene == 'braking' else 0., lateral_active=lateral),
                      customization=document,
+                     slc_prompt_open=scene == 'slc_pending',
                      visual_preview=OnroadVisualPreview(cem_reason=CEM_SCENE_REASONS[scene], layout_sample=True) if scene in CEM_SCENE_REASONS else None)
 
   if scene == 'cem_lead':
@@ -113,12 +119,13 @@ def sample_state(scene: str, document: dict) -> OnroadState:
     observation = replace(observation, limiting_max_set=False)
   elif scene == 'slc_equal':
     state = replace(state, cruise_kph=79.2)
-  elif scene in ('slc_pedal', 'slc_retained'):
+  elif scene == 'slc_pedal':
+    state = replace(state, longitudinal_overridden=True)
+  elif scene == 'slc_retained':
     observation = replace(observation, driver_override_active=True,
-                          override_basis='pedal' if scene == 'slc_pedal' else 'persistent',
-                          retained_override=scene == 'slc_retained')
+                          override_basis='persistent', retained_override=True)
   elif scene == 'slc_unavailable':
-    observation = SpeedLimitObservation(kind=ObservationKind.STALE)
+    observation = SpeedLimitObservation(kind=ObservationKind.STALE, status='display_hold')
   elif scene == 'slc_disengaged':
     observation = replace(observation, action_enabled=True, effective_cluster_target_mps=None)
   elif scene == 'slc_display':
@@ -223,11 +230,13 @@ class _Canvas:
         self.view.projection_exit_layer = ProjectionExit(rl).render
         self.view.now_playing.track = {'source': 'spotify', 'status': 'playing', 'title': 'Midnight City', 'artist': 'M83', 'album': '',
                                        'durationMs': 243000, 'position': {'ms': 92000, 'at': 0, 'speed': 0.0}}
-        from openpilot.starpilot.models.jetlink_status import JetlinkStatus
-        self.view.jetlink_status.status = JetlinkStatus('iPhone', 'active', 24.6, 'connected')
+      if profile == Profile.LARGE:
         from openpilot.starpilot.ui.onroad_map import MapOverlay, SampleTileReader
         self.map = MapOverlay(reader=SampleTileReader(), fonts=self.fonts)
         self.view.map_layer = self._render_map
+        from openpilot.starpilot.models.jetlink_status import JetlinkStatus
+        from openpilot.starpilot.ui.onroad_jetlink import JetlinkStatusWidget
+        cast(JetlinkStatusWidget, self.view.jetlink_status).status = JetlinkStatus('iPhone', 'active', 24.6, 'connected')
       self.monitor = _DriverMonitorArt(profile)
       self.view.driver_monitor_layer = self._render_driver_monitor
       self.view.preview_pip_layer = self._render_preview_pip
@@ -251,7 +260,8 @@ class _Canvas:
   def _render_map(self, _rect: rl.Rectangle, state: OnroadState) -> None:
     placed = self._map_placement(state)
     if placed is not None and self.map is not None:
-      self.map.draw(rl.Rectangle(placed["x"], placed["y"], placed["width"], placed["height"]), placed["opacity"] / 100.0)
+      shift = (self.viewport[0] if self.viewport else state.viewport_width) - 1860
+      self.map.draw(rl.Rectangle(placed["x"] + shift, placed["y"], placed["width"], placed["height"]), placed["opacity"] / 100.0)
 
   def _render_preview_pip(self, rect, state, *, submit=None):
     if submit is not None:
@@ -337,18 +347,19 @@ class _Canvas:
     for key in RUNTIME_PREVIEW_WIDGETS[str(self.profile)]:
       logical_width, logical_height = widget_size(state.customization, self.profile, key)
       position = positions[key]
-      crop_x, crop_y = math.floor(position['x']), math.floor(position['y'])
+      widget = PROFILES[str(self.profile)]['widgets'][key]
+      crop_x = max(0, math.floor(position['x'] - widget.get('visualInsetLeft', 0)))
+      crop_y = max(0, math.floor(position['y'] - widget.get('visualInsetTop', 0)))
       offset_x, offset_y = crop_x - position['x'], crop_y - position['y']
-      if key == 'speed_limit_actions' and self.profile == Profile.COMPACT:
-        # The native pending-limit heading sits above the buttons, or below them
-        # when they are placed at the top edge. Include it in the exported sprite.
-        inset = PROFILES['compact']['widgets'][key]['visualInsetTop']
-        if position['y'] >= inset:
-          crop_y -= inset
-          offset_y -= inset
-        else:
-          logical_height += inset
       width, height = math.ceil(logical_width - offset_x), math.ceil(logical_height - offset_y)
+      if state.speed_limit.pending_speed_limit_mps is not None and (area := widget.get('confirmation')) is not None:
+        crop_x = math.floor(min(crop_x, position['x'] + area['x']))
+        crop_y = math.floor(min(crop_y, position['y'] + area['y']))
+        width = math.ceil(max(position['x'] + logical_width, position['x'] + area['x'] + area['width']) - crop_x)
+        height = math.ceil(max(position['y'] + logical_height, position['y'] + area['y'] + area['height']) - crop_y)
+        offset_x, offset_y = crop_x - position['x'], crop_y - position['y']
+      if self.profile == Profile.COMPACT and key == 'speed_limit' and 0 <= crop_y < canvas_height:
+        height = min(height, canvas_height - crop_y)
       if x + width > 1024:
         x, y, row_height = 0, y + row_height, 0
       sprites[key] = {'x': x, 'y': y, 'width': width, 'height': height, 'offsetX': offset_x, 'offsetY': offset_y}
@@ -468,11 +479,14 @@ class LayoutPreviewRenderer:
     profile = Profile.LARGE if viewport else Profile(payload["profile"])
     scene = payload["scene"]
     sidebar = document.pop('developerSidebar', False)
-    state = sample_state(scene, document)
     if profile == Profile.LARGE and viewport is None:
       width = profile.size[0] - (SIDEBAR_WIDTH if sidebar else 0)
+      # Widget art is cropped from the saved 1860px road, as the editor places each sprite itself.
+      document = fit_to_road(document, ROAD_BASE_WIDTH if payload.get('art') is True else width)
+    state = sample_state(scene, document)
+    if profile == Profile.LARGE and viewport is None:
       state = replace(state, viewport_width=width, appearance=replace(state.appearance, show_developer_sidebar=sidebar))
-    if viewport:
+    if profile == Profile.LARGE:
       from openpilot.starpilot.ui.navigation_state import NavigationDisplay
       state = replace(state, navigation=NavigationDisplay(("preview", 1), "Turn left onto Desert Inn Road", "turn", "left",
                                                           152.0, 6800.0, 540.0))

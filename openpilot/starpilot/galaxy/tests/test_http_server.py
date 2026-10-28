@@ -74,7 +74,7 @@ def server(tmp_path, monkeypatch):
 
   with _LocalHTTPServer(('127.0.0.1', 0), Handler) as http:
     services: set[int] = set()
-    http.loopback = lambda request: request.getpeername()[1] in services
+    monkeypatch.setattr(http, 'loopback', lambda request: request.getpeername()[1] in services)
     http.services = services
     thread = threading.Thread(target=http.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
     thread.start()

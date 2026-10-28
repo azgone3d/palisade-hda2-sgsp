@@ -1,4 +1,5 @@
 from opendbc.car.gm.one_pedal import VoltOnePedal
+from opendbc.car.gm.steering_authority import EPS_STATUS_TIMEOUT_NS
 from opendbc.car.gm.values import gm_control_word, is_volt_one_pedal, camera_acc_pedal_profile, volt_cc_pedal_profile
 from opendbc.car.gm.longitudinal import volt_sng_release
 from opendbc.car.gm.auto_hold import AutoHold, config_for as auto_hold_config_for, hold_brake as estimate_hold_brake
@@ -6,6 +7,7 @@ from opendbc.car.gm.values import is_gm_auto_hold
 from opendbc.car.gm.ordinary import demands as ascm_demands
 from opendbc.car.gm.truck_longitudinal import TruckTuning, truck_tuning_supported
 import math
+from opendbc.car.gm.bolt_acc_brake_clock import BoltAccBrakeClock
 import numpy as np
 from opendbc.can import CANPacker
 from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, Bus, DT_CTRL, structs
@@ -265,6 +267,7 @@ class CarController(CarControllerBase):
     self.long_pitch_input = None
     self.bolt_removed_cancel_credit_used = 0
     self.bolt_pedal_removed = is_bolt_pedal_removed_profile(CP) or is_bolt_pedal_removed_profile(CP, stock_only=True)
+    self.bolt_steering_ack_counter = is_bolt_pedal_profile(CP) or is_bolt_pedal_profile(CP, stock_only=True)
     self.bolt_present_no_acc_stock = is_bolt_present_no_acc_pedal_profile(CP, stock_only=True)
     self.truck_tuning = TruckTuning() if truck_tuning_supported(CP) else None
     self.truck_tuning_input = None
@@ -299,6 +302,8 @@ class CarController(CarControllerBase):
     self.bolt_acc_pedal_friction_release_frames = 0
     self.bolt_acc_pedal_friction_low_speed_active = False
     self.bolt_acc_pedal_stop_hold = False
+    self.bolt_acc_brake_clock = (BoltAccBrakeClock() if int(CP.safetyConfigs[0].safetyParam) == 0x1CD and
+                                CP.carFingerprint == CAR.CHEVROLET_BOLT_ACC_2022_2023_PEDAL and is_bolt_pedal_profile(CP) else None)
 
     self.lka_steering_cmd_counter = 0
     self.lka_icon_status_last = (False, False)
@@ -575,7 +580,15 @@ class CarController(CarControllerBase):
       if self.CP.openpilotLongitudinalControl:
         stock_steer_ready = (stock_steer_ready and CS.pedal_sensor_healthy and
                             0 < CS.pedal_sensor_ts_nanos <= now_nanos <= CS.pedal_sensor_ts_nanos + PEDAL_SENSOR_TIMEOUT_NS)
-    lat_active = CC.latActive and stock_steer_ready and not CS.steering_authority.latched
+    # An SDGM EPS can report inactive while the driver holds the brake. Emit
+    # neutral for that measured pause so releasing the brake starts a new request.
+    # Keep the existing acquisition deadline and genuine refusal latch intact.
+    sdgm_brake_pause = False
+    if self.volt_sdgm_long and CS.out.brakePressed:
+      steering = CS.steering_authority
+      sdgm_brake_pause = (steering.enabled and steering.status == 0 and
+                          0 < steering.status_ns <= now_nanos <= steering.status_ns + EPS_STATUS_TIMEOUT_NS)
+    lat_active = CC.latActive and stock_steer_ready and not CS.steering_authority.latched and not sdgm_brake_pause
 
     # Steering (Active: 50Hz, inactive: 10Hz)
     steer_step = self.params.STEER_STEP if lat_active else self.params.INACTIVE_STEER_STEP
@@ -592,7 +605,11 @@ class CarController(CarControllerBase):
       if CS.loopback_lka_steering_cmd_ts_nanos == 0 or out_of_sync:
         steer_step = self.params.STEER_STEP
 
-    self.lka_steering_cmd_counter += 1 if CS.loopback_lka_steering_cmd_updated else 0
+    if self.bolt_steering_ack_counter:
+      if CS.loopback_lka_steering_cmd_updated:
+        self.lka_steering_cmd_counter = (CS.loopback_lka_steering_cmd_counter + 1) % 4
+    else:
+      self.lka_steering_cmd_counter += 1 if CS.loopback_lka_steering_cmd_updated else 0
 
     # Avoid GM EPS faults when transmitting messages too close together: skip this transmit if we
     # received the ASCMLKASteeringCmd loopback confirmation too recently
@@ -845,10 +862,16 @@ class CarController(CarControllerBase):
           elif self.bolt_acc_pedal_friction_release_frames > 0:
             self.bolt_acc_pedal_friction_release_frames -= 1
           if friction_main_on or self.bolt_acc_pedal_friction_release_frames > 0:
-            can_sends.append(gmcan.create_friction_brake_command(
-              self.packer_ch, CanBus.POWERTRAIN, self.apply_brake, (self.frame // 4) % 4,
-              active and friction_main_on, active and CS.out.vEgo < self.params.NEAR_STOP_BRAKE_PHASE,
-              active and CS.out.standstill and actuators.longControlState == LongCtrlState.stopping, self.CP))
+            if self.bolt_acc_brake_clock is not None:
+              self.bolt_acc_brake_clock.prepare(
+                now_nanos, self.apply_brake, active and friction_main_on,
+                active and CS.out.vEgo < self.params.NEAR_STOP_BRAKE_PHASE,
+                active and CS.out.standstill and actuators.longControlState == LongCtrlState.stopping)
+            else:
+              can_sends.append(gmcan.create_friction_brake_command(
+                self.packer_ch, CanBus.POWERTRAIN, self.apply_brake, (self.frame // 4) % 4,
+                active and friction_main_on, active and CS.out.vEgo < self.params.NEAR_STOP_BRAKE_PHASE,
+                active and CS.out.standstill and actuators.longControlState == LongCtrlState.stopping, self.CP))
         else:
           self.apply_brake = 0
         dashboard_ready = (
@@ -864,6 +887,17 @@ class CarController(CarControllerBase):
           can_sends.append(gmcan.create_acc_dashboard_command(
             self.packer_pt, CanBus.POWERTRAIN, CC.enabled, hud_v_cruise * CV.MS_TO_KPH,
             hud_control, False, cruise_state=2, fcw_alert=fcw))
+      if self.bolt_acc_brake_clock is not None:
+        main_ns = getattr(CS, "bolt_pedal_main_ts_nanos", 0)
+        main_ready = (CS.out.cruiseState.available and stock_ownership_clear and
+                      0 < main_ns <= now_nanos and now_nanos - main_ns <= 300_000_000)
+        scheduled = self.bolt_acc_brake_clock.sample(
+          now_nanos, getattr(CS, "bolt_acc_brake_clock_ns", 0), getattr(CS, "bolt_acc_brake_clock_counter", 0),
+          active=bool(active), main_ready=main_ready, source_valid=bool(CS.out.canValid and not CS.out.canTimeout))
+        if scheduled is not None:
+          brake, counter, enabled, near_stop, full_stop = scheduled
+          can_sends.append(gmcan.create_friction_brake_command(
+            self.packer_ch, CanBus.POWERTRAIN, brake, counter, enabled, near_stop, full_stop, self.CP))
       if self.bolt_pedal_removed and self.frame % 100 == 0:
         can_sends += gmcan.create_adas_keepalive(CanBus.POWERTRAIN)
       # Stock ACC on the equipped variant is canceled while pedal control owns longitudinal.

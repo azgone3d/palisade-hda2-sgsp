@@ -13,11 +13,12 @@ export const PREVIEW_SCENES = [
   { id: "cem_stop_light", label: "CEM · Traffic light" },
   { id: "cem_lead", label: "CEM · Stopped lead" },
   { id: "cem_curve", label: "CEM · Curve" },
-  { id: "slc_pending", label: "Pending speed limit" },
+  { id: "slc_notice", label: "New Limit notice" },
+  { id: "slc_pending", label: "Confirmation choices" },
   { id: "slc_max", label: "Using set speed" },
   { id: "slc_equal", label: "Equal speed limits" },
   { id: "slc_pedal", label: "Using accelerator", hiddenOn: ["compact"] },
-  { id: "slc_retained", label: "Set-speed override", hiddenOn: ["compact"] },
+  { id: "slc_retained", label: "Set-speed override" },
   { id: "slc_disengaged", label: "Cruise off" },
   { id: "slc_unavailable", label: "Unavailable speed limit" },
   { id: "slc_display", label: "Display-only speed limit", hiddenOn: ["compact"] },
@@ -31,8 +32,8 @@ export function previewScene(scene) {
   const longitudinal = !off && scene !== "aol"
   const experimental = scene === "experimental" || scene.startsWith("cem_")
   return { lateral, longitudinal, experimental,
-    border: off ? "#122839" : experimental ? "#da6f25" : !longitudinal ? "#0abab5" : !lateral ? "#ff69b4" : "#167f40",
-    mode: off ? "Disengaged" : !longitudinal ? "Always On Lateral" : experimental ? "ACC - Experimental" : "ACC - Chill" }
+    border: off ? "#122839" : scene === "slc_pedal" ? "#919b95" : experimental ? "#da6f25" : !longitudinal ? "#0abab5" : !lateral ? "#ff69b4" : "#167f40",
+    mode: off ? "Disengaged" : scene === "slc_pedal" ? "ACC - Override" : !longitudinal ? "Always On Lateral" : experimental ? "ACC - Experimental" : "ACC - Chill" }
 }
 
 export function sceneHidesWidget(scene, profile, id, layout = {}, widgets = {}) {
@@ -44,8 +45,8 @@ export function sceneHidesWidget(scene, profile, id, layout = {}, widgets = {}) 
   if (profile === "compact" && id === "max_speed") return !longitudinal
   // Native samples already use their accepted limit except for a pending decision,
   // a lower set speed, or a driver override. Those are the remaining actionable scenes.
-  if (id === "speed_limit_actions") return profile === "compact" ? scene !== "slc_pending" :
-    !["slc_pending", "slc_max", "slc_pedal", "slc_retained"].includes(scene)
+  const slcActions = ["slc_pending", "slc_max", "slc_retained"].includes(scene)
+  if (id === "speed_limit_actions") return scene === "slc_pending" || !slcActions
   const overlaps = (a, b) => a && b && a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y
   const box = key => {
     if (!layout[key]?.enabled || !widgets[key]) return null
@@ -54,11 +55,17 @@ export function sceneHidesWidget(scene, profile, id, layout = {}, widgets = {}) 
   }
   if (profile === "compact" && id === "driver_monitor" && longitudinal) return !!overlaps(box(id), box("max_speed"))
   if (profile === "compact" && id === "speed_limit") {
+    if (scene === "slc_pending" || scene === "slc_notice") return false
     if (scene === "slc_unavailable") return true
     const actions = box("speed_limit_actions")
-    if (scene !== "slc_pending" || !actions) return false
+    if (!slcActions || !actions) return false
+    const sign = box(id)
+    if (!sign) return false
+    const signTop = Math.max(0, sign.y - (sign.visualInsetTop || 0))
+    const signLeft = Math.max(0, sign.x - (sign.visualInsetLeft || 0))
     const inset = actions.visualInsetTop || 0
-    return !!overlaps(box(id), { ...actions, y: actions.y >= inset ? actions.y - inset : actions.y, height: actions.height + inset })
+    return !!overlaps({ ...sign, x: signLeft, y: signTop, width: sign.width + sign.x - signLeft, height: sign.height + sign.y - signTop },
+      { ...actions, y: actions.y >= inset ? actions.y - inset : actions.y, height: actions.height + inset })
   }
   return false
 }

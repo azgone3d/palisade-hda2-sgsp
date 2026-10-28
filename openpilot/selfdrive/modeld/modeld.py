@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from collections.abc import Callable
+from typing import TYPE_CHECKING, cast
 import base64
 import ctypes
 import gc
@@ -15,6 +16,8 @@ from tinygrad.engine.realize import lower_and_compile
 from tinygrad.tensor import Tensor
 from tinygrad.helpers import all_int, round_up
 from tinygrad.uop.ops import UOp
+if TYPE_CHECKING:
+  from openpilot.starpilot.models.runtime_bridge.legacy_types import LegacyBuffer, LegacyUOpFactory
 import math
 import pickle
 import threading
@@ -32,7 +35,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.params import Params
 from openpilot.common.hardware.usb import cable_connected
 from openpilot.common.filter_simple import FirstOrderFilter
-from openpilot.common.realtime import config_realtime_process, DT_MDL
+from openpilot.common.realtime import config_realtime_process, set_core_affinity, DT_MDL
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
 from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.common.transformations.model import get_warp_matrix
@@ -55,12 +58,11 @@ import uuid
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, should_stop, smooth_value, get_curvature_from_plan
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
 from openpilot.selfdrive.modeld.fill_model_msg import fill_model_msg, fill_driving_model_data, fill_pose_msg, PublishState
-from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
+from openpilot.selfdrive.modeld.constants import LAT_SMOOTH_SECONDS, ModelConstants, Plan
 from openpilot.selfdrive.modeld.helpers import MODELS_DIR, chestnut_present, modeld_pkl_path, load_oob, wait_for_chestnut
 
 SEND_RAW_PRED = os.getenv('SEND_RAW_PRED')
 
-LAT_SMOOTH_SECONDS = 0.0
 LONG_SMOOTH_SECONDS = 0.3
 MIN_LAT_CONTROL_SPEED = 0.3
 BIG_MODEL_TIMEOUT = 120
@@ -159,8 +161,8 @@ class FrameMeta:
 def input_view(buffer: Buffer, shape: tuple[int, ...], dtype: DType, offset: int) -> Tensor:
   from openpilot.starpilot.models.runtime_bridge.runtime import selected_legacy
   if selected_legacy():
-    view = buffer.view(math.prod(shape), dtype, offset).ensure_allocated()
-    return Tensor(UOp.from_buffer(view)).reshape(shape)
+    view = cast("LegacyBuffer", buffer).view(math.prod(shape), dtype, offset).ensure_allocated()
+    return Tensor(cast("LegacyUOpFactory", UOp).from_buffer(view)).reshape(shape)
   view = buffer.view(math.prod(shape) * dtype.itemsize, offset).ensure_allocated()
   return Tensor(UOp.from_buffer(view, dtype)).reshape(shape)
 
@@ -238,7 +240,8 @@ class ModelState:
     self.input_device.copy_from(self.input_host)
     self.input_queues['new_img'] = self.run_warp(**self.warp_inputs)
     self.run_model(output_buffers=self.outputs, **self.input_queues)
-    if self.chestnut and not selected_legacy() and (err := Device[self.outputs['outputs'].device].error_state.host.view(fmt='q')[0]):
+    if (self.chestnut and not selected_legacy() and
+        (err := Device[cast(str, self.outputs['outputs'].device)].error_state.host.view(fmt='q')[0])):
       raise RuntimeError(f"chestnut failed with {err}")
     if after_enqueue is not None:
       after_enqueue()
@@ -330,18 +333,23 @@ def main(demo=False):
   else:
     CP = messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams)
   cloudlog.info("modeld got CarParams: %s", CP.brand)
+  from openpilot.starpilot.car.subaru.smoothing import read_frozen, seconds as subaru_smooth_seconds, filter_action
+  subaru_smoothing = read_frozen(CP, params)
 
   st = time.monotonic()
   cloudlog.warning("loading model")
   model = None
   big_prepared = None
 
+  # with Jetlink on, the small model's warp output moves where the link sends it from, before warmup links it
+  coherent_warp = jetlink_adapter.coherent_warp()
+
   def load_small():
     if selection.small_path is not None:
       try:
         selected, prepared = load_verified_model(vipc_client_main.width, vipc_client_main.height,
                                                  selection.small_path, selection.small_version, False,
-                                                 selection.small_id, selection.small_sha256)
+                                                 selection.small_id, selection.small_sha256, coherent_warp=coherent_warp)
         return selected, prepared, False
       except Exception:
         cloudlog.exception("selected small model load failed, using shipped RDFv4")
@@ -351,7 +359,7 @@ def main(demo=False):
       raise RuntimeError("Shipped RDFv4 is missing or corrupt")
     fallback, prepared = load_verified_model(vipc_client_main.width, vipc_client_main.height,
                                              path, BY_ID[DEFAULT_SMALL].version, False,
-                                             DEFAULT_SMALL, DEFAULT_SMALL_SHA256)
+                                             DEFAULT_SMALL, DEFAULT_SMALL_SHA256, coherent_warp=coherent_warp)
     return fallback, prepared, selection.small_id != DEFAULT_SMALL
 
   # Preload a custom fallback before the GPU worker takes the catalog lock.
@@ -370,6 +378,7 @@ def main(demo=False):
         wait_for_chestnut()
         if not demo:
           wait_for_chestnut_power(CP, timeout=min(30., BIG_MODEL_TIMEOUT / 2))
+        set_core_affinity([7])
         if selection.big_path is not None:
           m, prepared = load_verified_model(vipc_client_main.width, vipc_client_main.height,
                                             big_path, selection.big_version, True, selection.big_id, selection.big_sha256)
@@ -392,7 +401,8 @@ def main(demo=False):
       # A timed-out loader can still mutate tinygrad's shared device state.
       # The manager must confirm this process has exited before starting Small.
       cloudlog.error("Chestnut startup failed; requesting isolated Small restart")
-      raise SystemExit(STARTUP_FALLBACK_EXIT)
+      # Avoid Python/native finalizers retaining this failed GPU context.
+      os._exit(STARTUP_FALLBACK_EXIT)
 
   if small_model is None:
     small_model, small_prepared, selected_small_failed = load_small()
@@ -458,7 +468,7 @@ def main(demo=False):
   initial_mono_ns, initial_boot_ns, initial_skew_ns = paired_clocks_ns()
   lane_clock_guard = ClockEpochGuard(initial_mono_ns, initial_boot_ns, initial_skew_ns)
   DH = DesireHelper(runtime_lane_policy)
-  navigation_turn = TurnIntent()
+  navigation_turn = TurnIntent(params, CP)
   lane_status_session = uuid.uuid4().hex
   lane_status_sequence = 0
 
@@ -504,7 +514,8 @@ def main(demo=False):
     is_rhd = sm["driverMonitoringState"].isRHD
     frame_id = sm["narrowRoadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
-    lat_delay = sm["lateralDelay"].lateralDelay + LAT_SMOOTH_SECONDS
+    subaru_tau = subaru_smooth_seconds(v_ego, subaru_smoothing)
+    lat_delay = sm["lateralDelay"].lateralDelay + LAT_SMOOTH_SECONDS + subaru_tau
     if sm.updated["extrinsicsCalibration"] and sm.seen['narrowRoadCameraState'] and sm.seen['deviceState']:
       device_from_calib_euler = np.array(sm["extrinsicsCalibration"].rpyCalib, dtype=np.float32)
       dc = DEVICE_CAMERAS[(str(sm['deviceState'].deviceType), str(sm['narrowRoadCameraState'].sensor))]
@@ -588,12 +599,13 @@ def main(demo=False):
         receipt_owner.loaded(small_prepared, ModelVariant.SMALL, model_id=small_model.model_id)
       cloudlog.event("jetlinkHandover", state=HOOKS.state(model), handovers=model.handovers)
 
-    if model_output is not None:
+    if model_output is not None and vipc_dropped_frames == 0:
       modelv2_send = messaging.new_message('modelV2')
       drivingdata_send = messaging.new_message('drivingModelData')
       posenet_send = messaging.new_message('cameraOdometry')
 
       action = model.get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego)
+      filter_action(action, prev_action, v_ego, subaru_tau)
       prev_action = action
       fill_model_msg(modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,

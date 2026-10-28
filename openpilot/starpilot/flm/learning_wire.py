@@ -10,6 +10,7 @@ from capnp.lib.capnp import _DynamicStructReader
 from openpilot.cereal import custom, messaging
 from openpilot.starpilot.flm.adaptive_profile import Parameter, Profile, ReplayValidation, replay_accepts
 from openpilot.starpilot.flm.fullrate_collector import ControlEvidence, AppliedEvidence, identity, finite
+from openpilot.starpilot.flm.native_refinement_wire import valid_inputs, EXTENDED_INPUTS
 
 
 class _FullSurfaceFields(TypedDict):
@@ -69,6 +70,13 @@ def _read_named_values(values, bound):
   return tuple(result)
 
 
+def _read_original_inputs(values):
+  result = _read_named_values(values, EXTENDED_INPUTS)
+  if not valid_inputs(result):
+    raise ValueError('versioned original replay input bounds')
+  return result
+
+
 def _write_effect_trace(trace):
   from openpilot.starpilot.flm.effect_trace import FullEffectTrace
   if not isinstance(trace, FullEffectTrace):
@@ -124,9 +132,14 @@ def write_control(parent, evidence):
     or not identity(evidence.identity)
     or not 1 <= len(evidence.features) <= MAX_FIELDS
     or not all(finite(v) for v in (*evidence.features, evidence.requested, evidence.baseline_prediction))
+    or not valid_inputs(evidence.replay_inputs)
+    or len(evidence.live_applied_coordinates) not in (0, 30)
+    or not all(finite(v) for v in evidence.live_applied_coordinates)
+    or len(evidence.vehicle_model_anchor) not in (0, 3)
+    or not all(finite(v) and v != 0.0 for v in evidence.vehicle_model_anchor)
   ):
     raise ValueError('control evidence')
-  parent.learningEvidence = {
+  payload = {
     'version': VERSION,
     'identity': evidence.identity,
     'generation': evidence.generation,
@@ -151,6 +164,8 @@ def write_control(parent, evidence):
     'replaySnapshot': _named_values(evidence.replay_snapshot),
     'replayInputs': _named_values(evidence.replay_inputs),
     'snapshotSequence': evidence.snapshot_sequence,
+    'vehicleModelAnchor': evidence.vehicle_model_anchor,
+    'liveAppliedCoordinates': evidence.live_applied_coordinates,
     'turnAssist': evidence.turn_assist,
     'appliedParameterNames': evidence.applied_parameter_names,
     'nativeRequired': evidence.native_required,
@@ -179,8 +194,22 @@ def write_control(parent, evidence):
     },
   }
 
+  # Construct typed nested rows directly. Recursive Python-dict conversion in
+  # pycapnp is costly on the Controls publisher; every original field/value
+  # and the validation above remain unchanged.
+  wire = parent.init('learningEvidence')
+  for name, value in payload.items():
+    if name in ('replaySnapshot', 'replayInputs', 'stageValues'):
+      nested_values = cast(list[dict[str, object]], value)
+      rows = wire.init(name, len(nested_values))
+      for row, fields in zip(rows, nested_values, strict=True):
+        for field, item in fields.items():
+          setattr(row, field, item)
+    else:
+      setattr(wire, name, value)
+
   if evidence.effect_trace is not None:
-    parent.learningEvidence.effectTrace = _write_effect_trace(evidence.effect_trace)
+    wire.effectTrace = _write_effect_trace(evidence.effect_trace)
 
 
 def read_control(event):
@@ -194,6 +223,10 @@ def read_control(event):
     or len(row.stageValues) > 40
     or len(row.baselineValues) > 32
     or len(row.appliedParameterNames) > 8
+    or len(row.liveAppliedCoordinates) not in (0, 30)
+    or not all(finite(float(v)) for v in row.liveAppliedCoordinates)
+    or len(row.vehicleModelAnchor) not in (0, 3)
+    or not all(finite(float(v)) and float(v) != 0.0 for v in row.vehicleModelAnchor)
   ):
     raise ValueError('control version or bound')
   return ControlEvidence(
@@ -228,7 +261,7 @@ def read_control(event):
     tuple(float(v) for v in row.baselineValues),
     str(row.controllerRevision),
     _read_named_values(row.replaySnapshot, 1024),
-    _read_named_values(row.replayInputs, 32),
+    _read_original_inputs(row.replayInputs),
     int(row.snapshotSequence),
     bool(row.turnAssist),
     tuple(_string(str(name)) for name in row.appliedParameterNames),
@@ -242,6 +275,8 @@ def read_control(event):
     int(row.appliedProfileValidUntilMonoTime),
     _read_effect_trace(row.effectTrace),
     int(row.effectPrepareMonoTime),
+    tuple(float(v) for v in row.vehicleModelAnchor),
+    tuple(float(v) for v in row.liveAppliedCoordinates),
   )
 
 

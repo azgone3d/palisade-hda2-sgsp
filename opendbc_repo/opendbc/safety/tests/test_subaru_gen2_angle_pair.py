@@ -34,20 +34,23 @@ class TestSubaruGen2AnglePair(unittest.TestCase):
   @staticmethod
   def sources(car, *, brake=False, cruise=True, speed=30, main=True, torque=0):
     packer = CANPacker(DBC[car][Bus.pt])
-    inputs = (
-      ('Throttle', 0, {}),
+    wheel_bus = 0 if car == CAR.SUBARU_FORESTER_2022 else 1
+    status_bus = 2 if car == CAR.SUBARU_FORESTER_2022 else 1
+    pt_bus = 1 if car == CAR.SUBARU_OUTBACK_2023 else 0
+    inputs: tuple[tuple[str, int, dict[str, float]], ...] = (
+      ('Throttle', pt_bus, {}),
       ('Steering_Torque', 0, {'Steer_Torque_Sensor': torque}),
       ('Steering_2', 0, {'Steering_Angle': 0}),
-      ('Wheel_Speeds', 1, {'FL': speed, 'FR': speed, 'RL': speed, 'RR': speed}),
-      ('Brake_Status', 1, {'Brake': int(brake)}),
-      ('ES_Status', 1, {'Cruise_Activated': int(cruise)}),
+      ('Wheel_Speeds', wheel_bus, {'FL': speed, 'FR': speed, 'RL': speed, 'RR': speed}),
+      ('Brake_Status', wheel_bus, {'Brake': int(brake)}),
+      ('ES_Status', status_bus, {'Cruise_Activated': int(cruise)}),
       ('ES_DashStatus', 2, {'Cruise_On': int(main)}),
-      ('Transmission', 0, {'Gear': 121}),
-      ('Dashlights', 0, {}),
-      ('BodyInfo', 0, {}),
-      ('ES_Distance', 1, {}),
+      ('Transmission', pt_bus, {'Gear': 121}),
+      ('Dashlights', pt_bus, {}),
+      ('BodyInfo', pt_bus, {}),
+      ('ES_Distance', status_bus, {}),
       ('ES_LKAS_State', 2, {}),
-      ('ES_Brake', 1, {}),
+      ('ES_Brake', status_bus, {}),
     )
     return packer, [packer.make_can_msg(name, bus, values) for name, bus, values in inputs]
 
@@ -67,7 +70,7 @@ class TestSubaruGen2AnglePair(unittest.TestCase):
     command.actuators.steeringAngleDeg = 1.0
     _, sends = CarController(DBC[car], cp).update(command.as_reader(), state, 1_100_000_000)
     steer = next(frame for frame in sends if frame[0] == 0x124)
-    self.assertEqual(steer[2], 1)
+    self.assertEqual(steer[2], 0)
     self.assertEqual(bool(steer[1][1] & 0x10), active and state.out.cruiseState.available and
                      state.out.cruiseState.enabled and not state.out.brakePressed)
     return state, steer, sends
@@ -99,8 +102,8 @@ class TestSubaruGen2AnglePair(unittest.TestCase):
           self.assertTrue(self.safety.safety_tx_hook(self.packet(steer)))
           self.assertEqual({frame[0] for frame in sends}, {0x124, 0x321, 0x322})
           self.assertFalse(self.safety.safety_tx_hook(self.packet((0x122, bytes(8), 0))))
-          self.assertFalse(self.safety.safety_tx_hook(self.packet((0x124, steer[1], 0))))
-          self.assertFalse(self.safety.safety_tx_hook(self.packet((0x124, steer[1][:-1], 1))))
+          self.assertFalse(self.safety.safety_tx_hook(self.packet((0x124, steer[1], 1))))
+          self.assertFalse(self.safety.safety_tx_hook(self.packet((0x124, steer[1][:-1], 0))))
           self.assertFalse(self.safety.safety_tx_hook(self.packet(packer.make_can_msg('ES_Distance', 1, {}))))
           cancel = structs.CarControl()
           cancel.cruiseControl.cancel = True
@@ -135,7 +138,8 @@ class TestSubaruGen2AnglePair(unittest.TestCase):
           self.assertFalse(self.safety.safety_config_valid())
       self.arm(cp, frames)
       _, steer, _ = self.controller(car, cp, frames)
-      for flags in (SubaruSafetyFlags.LONG, 0x20, 0x100):
+      invalid_option = 0x200 if car == CAR.SUBARU_LEGACY_2025 else 0x100
+      for flags in (SubaruSafetyFlags.LONG, 0x800, invalid_option):
         with self.subTest(car=car, flags=flags):
           self.mode(cp, extra_flags=flags)
           for frame in required:
@@ -219,7 +223,7 @@ class TestSubaruGen2AnglePair(unittest.TestCase):
       cp = self.params(car)
       self.mode(cp)
       self.assertEqual(self.safety.safety_fwd_hook(0, 0x124), 2)
-      self.assertEqual(self.safety.safety_fwd_hook(2, 0x124), 0)
+      self.assertEqual(self.safety.safety_fwd_hook(2, 0x124), -1)
       self.assertEqual(self.safety.safety_fwd_hook(2, 0x321), -1)
       self.assertEqual(self.safety.safety_fwd_hook(2, 0x322), -1)
       self.assertEqual(self.safety.safety_fwd_hook(2, 0x221), 0)

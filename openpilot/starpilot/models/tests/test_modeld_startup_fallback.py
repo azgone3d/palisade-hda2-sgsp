@@ -38,7 +38,18 @@ def test_jetlink_gets_the_frames_delay_before_every_run():
     return next(node.lineno for node in statements if isinstance(node, ast.Assign) and ast.unparse(node) == source)
   run = next(node.lineno for node in statements if isinstance(node, ast.Try) and
              any(isinstance(child, ast.Call) and ast.unparse(child.func) == "model.run" for child in ast.walk(node)))
-  assert line("lat_delay = sm['lateralDelay'].lateralDelay + LAT_SMOOTH_SECONDS") < line("model.lat_delay = lat_delay") < run
+  assert (line("subaru_tau = subaru_smooth_seconds(v_ego, subaru_smoothing)") <
+          line("lat_delay = sm['lateralDelay'].lateralDelay + LAT_SMOOTH_SECONDS + subaru_tau") <
+          line("model.lat_delay = lat_delay") < run)
+  assignments = {ast.unparse(node.targets[0]): node for node in statements if isinstance(node, ast.Assign)}
+  # Reuse the same joined runner across frames: each write must include the current delay and smoothing.
+  model = SimpleNamespace(lat_delay=-1.)
+  for delay, tau in ((.1, 0.), (.25, .4), (.05, 2.)):
+    env = {"sm": {"lateralDelay": SimpleNamespace(lateralDelay=delay)}, "LAT_SMOOTH_SECONDS": .03,
+           "subaru_tau": tau, "model": model}
+    code = ast.Module(body=[assignments["lat_delay"], assignments["model.lat_delay"]], type_ignores=[])
+    exec(compile(ast.fix_missing_locations(code), str(MODEL_SOURCE), "exec"), env)
+    assert model.lat_delay == pytest.approx(delay + .03 + tau)
 
 
 @pytest.mark.parametrize("runner_chestnut,stored_active", [(True, False), (True, True), (False, True), (False, False)])
@@ -102,8 +113,12 @@ def test_remote_inference_failure_does_not_change_chestnut_status():
 
 
 def execute(statements, env):
-  env.setdefault("os", SimpleNamespace(getenv=lambda key: None))
+  def exit_process(code):
+    raise SystemExit(code)
+  env.setdefault("os", SimpleNamespace(getenv=lambda key: None, _exit=exit_process))
   env.setdefault("recovery_small_only", False)
+  env.setdefault("coherent_warp", None)
+  env.setdefault("set_core_affinity", Mock())
   from openpilot.starpilot.models.recovery import STARTUP_FALLBACK_EXIT
   env.setdefault("STARTUP_FALLBACK_EXIT", STARTUP_FALLBACK_EXIT)
   exec(compile(ast.fix_missing_locations(ast.Module(body=statements, type_ignores=[])), str(MODEL_SOURCE), "exec"), env)
@@ -152,7 +167,9 @@ def test_observed_availability_and_big_eligibility(monkeypatch, present, cable, 
 
 @pytest.mark.parametrize("timeout,worker_alive", [(False, False), (True, False), (True, True)])
 @pytest.mark.parametrize("custom", [False, True])
-def test_big_worker_waits_before_load_and_failure_requests_fresh_small_process(custom, timeout, worker_alive):
+def test_big_worker_waits_before_load_and_failure_requests_fresh_small_process(custom, timeout, worker_alive, monkeypatch):
+  from openpilot.starpilot.models import manager
+  monkeypatch.setattr(manager, "shipped_default", lambda: Path("bundled-small"))
   body = main_body()
   start = next(i for i, node in enumerate(body) if isinstance(node, ast.Assign) and ast.unparse(node.targets[0]) == "st")
   end = next(i for i, node in enumerate(body) if ast.unparse(node).startswith("config_realtime_process("))
@@ -186,7 +203,8 @@ def test_big_worker_waits_before_load_and_failure_requests_fresh_small_process(c
     events.append("big" if chestnut else "small")
     return SimpleNamespace(chestnut=chestnut, model_id="big" if chestnut else "small", warmup=Mock())
 
-  def verified(width, height, path, version, chestnut, model_id, sha):
+  def verified(width, height, path, version, chestnut, model_id, sha, **kwargs):
+    assert kwargs == ({} if chestnut else {"coherent_warp": None})
     return state(width, height, chestnut), "prepared-" + model_id
 
   params, receipt = Mock(), Mock()
@@ -207,7 +225,7 @@ def test_big_worker_waits_before_load_and_failure_requests_fresh_small_process(c
          "params": params, "requested_model_id": "big", "ModelVariant": ModelVariant,
          "CP": SimpleNamespace(brand="mock"), "demo": False,
          "wait_for_chestnut_power": lambda CP, timeout: events.append("power"),
-         "jetlink_adapter": SimpleNamespace(hooks=lambda: hooks), "drop_chestnut": Mock(),
+         "jetlink_adapter": SimpleNamespace(hooks=lambda: hooks, coherent_warp=lambda: None), "drop_chestnut": Mock(),
          "release_compile_pool": Mock(), "gc": Mock()}
   wrapper = ast.parse("def startup():\n  pass").body[0]
   wrapper.body = body[start:end] + [ast.Return(value=ast.Call(func=ast.Name(id="locals", ctx=ast.Load()), args=[], keywords=[]))]

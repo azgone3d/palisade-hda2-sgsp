@@ -12,9 +12,10 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.accel_boost import AccelBoost
+from openpilot.starpilot.longitudinal.encouragement import Encouragement
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (LongitudinalMpc, LongitudinalPlanSource, get_T_FOLLOW, get_jerk_factor,
-                                                                                      qualified_model_leads, ModelLeadHistory)
+                                                                                      qualified_model_leads, ModelLeadHistory, should_trigger_planner_fcw)
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, should_stop
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
@@ -34,6 +35,9 @@ from openpilot.starpilot.longitudinal.force_stop import StopPlan
 from openpilot.starpilot.longitudinal.follow_jerk import FollowJerk
 from openpilot.starpilot.longitudinal.lead_takeoff import LeadTakeoff, project as project_takeoff
 from openpilot.starpilot.longitudinal.lead_behavior import adjust as adjust_lead_behavior
+from openpilot.starpilot.longitudinal.hkg_vision_stop import owner_for as vision_stop_owner
+from openpilot.starpilot.car.ford.stopped_lead import owner_for as ford_stop_owner
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE
 from openpilot.starpilot.longitudinal.lead_approach import LeadApproach, LeadApproachKey, project as project_approach
 from openpilot.starpilot.lateral.lane_change_preferences import LaneChangePolicy
 from openpilot.starpilot.car.hyundai.palisade_gap import lead_buffer as palisade_lead_buffer
@@ -104,6 +108,7 @@ class LongitudinalPlanner:
     self.clock_ns = clock_ns
     self.allow_throttle = True
     self.accel_boost = AccelBoost()
+    self.encouragement = Encouragement()
     self.plan_drive_id = 0
     self.throttle_gate = ModelThrottleGate()
     self.ioniq6_throttle_gate_enabled = ioniq6_long_eligible(CP)
@@ -129,6 +134,8 @@ class LongitudinalPlanner:
     self.vehicle_cost_owner = planner_cost_owner(CP)
     self.lead_takeoff = LeadTakeoff()
     self.vehicle_far_follow = far_follow_owner(CP, dt)
+    self.vision_stop_buffer = vision_stop_owner(CP)
+    self.ford_stop_approach = ford_stop_owner(CP, STOP_DISTANCE - .5)
     self.preap_adaptive = preap_adaptive_owner(CP)
 
   def update(self, sm, *, cruise_ceiling: CruiseCeiling | None = None,
@@ -317,6 +324,8 @@ class LongitudinalPlanner:
 
     # TODO counter is only needed because radar is glitchy, remove once radar is gone
     self.fcw = self.mpc.crash_cnt > 2 and not sm['carState'].standstill
+    if self.CP.carFingerprint == 'SUBARU_CROSSTREK_2025':
+      self.fcw = self.fcw and should_trigger_planner_fcw(sm['radarState'].leadOne, float(v_ego))
     if self.fcw:
       cloudlog.info("FCW triggered")
 
@@ -409,7 +418,16 @@ class LongitudinalPlanner:
       self.a_cruise = max(0.0, self.a_cruise)
       cruise_should_stop = False
 
-    output_a_target_e2e = self.accel_boost.update(sm, output_a_target_e2e, output_a_target_mpc, self.a_cruise)
+    encouraged_model = self.encouragement.update(
+      sm, self.CP, now_ns=sample_now_ns, drive_id=drive_id, dt=self.dt, target_speed=v_cruise,
+      model_accel=output_a_target_e2e, mpc_accel=output_a_target_mpc, cruise_accel=self.a_cruise,
+      lateral_accel=(v_ego ** 2 * steer_angle_without_offset * CV.DEG_TO_RAD / (self.CP.steerRatio * self.CP.wheelbase)
+                     if self.CP.steerRatio > 0 and self.CP.wheelbase > 0 else math.inf),
+      blocked=bool(reset_state or self.fcw or not self.allow_throttle or self.force_stop_plan.forcing or
+                   output_should_stop_mpc or cruise_should_stop or self.mpc.solution_status != 0 or
+                   curve.effective_mps is not None or traffic_mode is not False))
+    manual_model = self.accel_boost.update(sm, output_a_target_e2e, output_a_target_mpc, self.a_cruise)
+    output_a_target_e2e = max(manual_model, encouraged_model)
 
     candidates = [(output_a_target_mpc, self.mpc.source, output_should_stop_mpc),
                   (self.a_cruise, LongitudinalPlanSource.cruise, cruise_should_stop)]
@@ -466,8 +484,17 @@ class LongitudinalPlanner:
         target=float(output_a_target), previous_target=float(a_prev), follow_seconds=float(self.mpc.params[0, 4]),
         blocked=bool(self.output_should_stop or self.fcw or self.force_stop_plan.forcing or
                      self.force_stop_plan.approach_distance_m > 0 or self.mpc.solution_status != 0))
+    if self.vision_stop_buffer is not None:
+      output_a_target, self.output_should_stop = self.vision_stop_buffer.sample(
+        sm, now_ns=sample_now_ns, drive_id=drive_id, target=float(output_a_target),
+        stopping=self.output_should_stop, accel_min=ACCEL_MIN,
+        active=profile_eligible and not reset_state and self.mpc.solution_status == 0)
     if preap_acceleration_cap is not None:
       output_a_target = min(output_a_target, preap_acceleration_cap)
+    if self.ford_stop_approach is not None:
+      output_a_target, self.output_should_stop = self.ford_stop_approach.sample(
+        sm, now_ns=sample_now_ns, drive_id=drive_id, target=float(output_a_target),
+        stopping=self.output_should_stop, accel_min=ACCEL_MIN, active=profile_eligible and not reset_state)
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
 
     self.v_desired_filter.x = self.v_desired_filter.x + self.dt * (self.output_a_target + a_prev) / 2.0

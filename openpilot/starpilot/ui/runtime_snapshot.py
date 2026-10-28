@@ -399,7 +399,7 @@ class RuntimeSnapshotAdapter:
   def build(self, mode: ShellMode, selected: Destination = Destination.STAR, *, compact_y: float = 0,
             compact_scroll_x: float = 0, sidebar_expanded: bool = True, now_ns: int | None = None,
             menu_only: bool = False, stopped_timer_enabled: bool | None = None,
-            onroad_view_only: bool = False) -> ShellSnapshot:
+            onroad_view_only: bool = False, stopped_timer_profile: str = "compact") -> ShellSnapshot:
     replay = getattr(self.ui_state, "replay_sample", None)
     if getattr(self.ui_state, "replay_clock", None) is not None:
       if replay is not None and replay.epoch != self._replay_epoch:
@@ -511,7 +511,7 @@ class RuntimeSnapshotAdapter:
         self._replay_stopped_history = False
       elif not timer_standstill or timer_reverse:
         self._replay_stopped_history = True
-    timer_enabled = (placement(self._customization_value, "compact", STOPPED_TIMER_WIDGET)["enabled"]
+    timer_enabled = (placement(self._customization_value, stopped_timer_profile, STOPPED_TIMER_WIDGET)["enabled"]
                      if stopped_timer_enabled is None else stopped_timer_enabled)
     stopped_duration = self._stopped_timer.step(
       now_ns=now_ns,
@@ -586,6 +586,12 @@ class RuntimeSnapshotAdapter:
     if not display_car_valid:
       curve = None
     cluster_cruise = _finite(display_car.vCruiseCluster) if display_car_valid else None
+    from openpilot.starpilot.speed_limits.toyota import projection as toyota_projection
+    toyota = toyota_projection(sm, now_ns) if started and display_car_valid else None
+    if toyota is not None and not str(toyota.status).startswith('off_') and (
+        slc is None or not slc.enabled or slc.hasPending or toyota.sessionId != slc.sessionId or
+        toyota.acceptedMonoTime != slc.acceptedMonoTime):
+      toyota = None
     cruise = cluster_cruise if cluster_cruise is not None and cluster_cruise > 0 else None
     if cluster_cruise == 0 and display_controls is not None:
       cruise = _finite(getattr(display_controls, "vCruiseDEPRECATED", None), positive=True)
@@ -606,7 +612,8 @@ class RuntimeSnapshotAdapter:
       if positive(shown_mps):
         # Keep only what the sign shows: a proposal or action identity is never retained.
         sign = replace(observation, speed_limit_mps=shown_mps, pending_speed_limit_mps=None, pending_source='none',
-                       decision_id=None, pending_adjusted_limit_mps=None, action_enabled=False)
+                       decision_id=None, pending_adjusted_limit_mps=None, action_enabled=False,
+                       automatic_adoption_pending=False, pending_since_ns=0)
         self._slc_sign_cache = (int(sm.logMonoTime['slcState']), drive_key, observation.session_id or '', sign)
       else:
         self._slc_sign_cache = None
@@ -617,7 +624,7 @@ class RuntimeSnapshotAdapter:
           not getattr(slc, 'decisionId', 0)):
         # Bridge a brief source gap without retaining a control target, acceptance,
         # action identity, or an obsolete limit for the rest of the drive.
-        source = previous.accepted_source if positive(previous.accepted_speed_limit_mps) else previous.source
+        source = previous.source
         observation = SpeedLimitObservation(kind=ObservationKind.VALID, source=source,
                                             speed_limit_mps=displayed_limit_mps(previous),
                                             offset_mps=previous.offset_mps, status='display_hold',
@@ -662,6 +669,12 @@ class RuntimeSnapshotAdapter:
       display_car_valid and getattr(display_car, 'gasPressed', False) and long_engaged and
       str(getattr(display_selfdrive, 'state', '')) == 'overriding' and
       cp is not None and cp.openpilotLongitudinalControl)
+    cruise_state = getattr(car, 'cruiseState', None)
+    wheel_confirmation = bool(
+      system_long and control is not None and getattr(control, 'enabled', False) and
+      cruise_state is not None and getattr(cruise_state, 'available', False) and
+      not (cp is not None and getattr(cp, 'brand', '') == 'toyota' and
+           (car.standstill or cruise_state.standstill or not cruise_state.enabled)))
     developer_metrics = self._developer_metrics.observe(
       drive=after if started else None, car=display_car if display_car_valid else None,
       delay=current_message(sm, 'lateralDelay', now_ns, after_frame=after) if started else None,
@@ -685,6 +698,8 @@ class RuntimeSnapshotAdapter:
     onroad = OnroadState(developer_metrics=developer_metrics, telemetry=telemetry, brake_lights=brake_lights,
                          engaged=display_lat_active or display_long_active or longitudinal_overridden, camera_available=started,
                          speed_mps=raw_speed, cruise_kph=cruise, speed_limit=observation,
+                         toyota_cruise_status=str(toyota.status) if toyota is not None else '',
+                         toyota_cruise_target_kph=_finite(toyota.targetKph, positive=True) if toyota is not None else None,
                          appearance=self._appearance_value, customization=self._customization_value,
                          alert=alert, metric=bool(ui.is_metric),
                          experimental_available=bool(ui.has_longitudinal_control),
@@ -709,6 +724,7 @@ class RuntimeSnapshotAdapter:
                            (display_long_active or longitudinal_overridden) and getattr(display_car, 'gasPressed', False))),
                          stock_cruise_active=stock_cruise,
                          slc_system_long_available=system_long,
+                         slc_wheel_confirmation_available=wheel_confirmation,
                          curve=curve, show_curve_status=_flag(params, "ShowCSCStatus"),
                          conditional_configured=self._conditional_choice, conditional_effective=conditional,
                          conditional_perception=perception,
@@ -745,15 +761,18 @@ class RuntimeSnapshotAdapter:
       bluetooth = value if value in ("off", "on", "connected") else "on" if value is True else "off" if value is False else ""
     except (OSError, RuntimeError, ValueError):
       bluetooth = ""
-    self._jetlink.set_enabled(mode == ShellMode.HOME)
-    jetlink_port = self._jetlink.snapshot().port
+    feed = getattr(ui, "jetlink_status_feed", None)
+    self._jetlink.set_enabled(feed is None and mode == ShellMode.HOME)
+    jetlink_status = (feed if feed is not None else self._jetlink).snapshot()
+    jetlink_port = jetlink_status.port
     jetlink = "connected" if jetlink_port == "connected" else "plugged" if jetlink_port == "device" else "off"
-    gpu_present = bool(device is not None and getattr(device, "chestnutPresent", False) and
-                       not getattr(ui, "usb_unknown", False))
+    gpu_present = bool((device is not None and getattr(device, "chestnutPresent", False) and
+                        not getattr(ui, "usb_unknown", False)) or
+                       (jetlink_status.state in ("connected", "connecting", "ready", "active")))
     gpu_active = bool(gpu_present and getattr(getattr(ui, "chestnut_state", None), "value", None) == "active")
     home = HomeState(version=DISPLAY_VERSION, commit=_text(params, "GitCommit"),
                      commit_date=_commit_date(_text(params, "GitCommitDate")),
-                     model_label="",
+                     model_label="Jetlink Model" if jetlink_status.state in ("ready", "active") else "",
                      description=home_description(_text(params, "UpdaterCurrentDescription")),
                      mode=(HomeMode.CONDITIONAL_EXPERIMENTAL if self._conditional_choice is ModeChoice.CEM else
                            HomeMode.CONDITIONAL_CHILL if self._conditional_choice is ModeChoice.CCM else

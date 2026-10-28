@@ -34,6 +34,16 @@ class CarInterface(CarInterfaceBase):
   RadarInterface = RadarInterface
 
   @staticmethod
+  def requires_lateral_body_dimensions(cp):
+    # The shared platform identifier does not establish a body/camera envelope.
+    return cp.carFingerprint == CAR.HYUNDAI_IONIQ_6
+
+  @staticmethod
+  def get_lateral_body_dimensions(cp):
+    from opendbc.car.hyundai.lane_body import dimensions
+    return dimensions(cp)
+
+  @staticmethod
   def startup_required(cp):
     from opendbc.car.hyundai.g90_startup import required
     from opendbc.car.hyundai.ev6_startup import required as ev6_required
@@ -45,8 +55,10 @@ class CarInterface(CarInterfaceBase):
     from opendbc.car.hyundai.ordinary_classic_startup import required as ordinary_classic_required
     from opendbc.car.hyundai.radar_hda1_startup import required as radar_hda1_required
     from opendbc.car.hyundai.radar_hda2_startup import required as radar_hda2_required
-    return (radar_hda2_required(cp) or radar_hda1_required(cp) or ordinary_classic_required(cp) or pe_long_required(cp) or
-            legacy_required(cp) or blended_required(cp) or required(cp) or
+    from opendbc.car.hyundai.generic_hda2_startup import required as generic_hda2_required
+    from opendbc.car.hyundai.gv60_startup import required as gv60_required
+    return (gv60_required(cp) or generic_hda2_required(cp) or radar_hda2_required(cp) or radar_hda1_required(cp) or ordinary_classic_required(cp) or
+            pe_long_required(cp) or legacy_required(cp) or blended_required(cp) or required(cp) or
             ev6_required(cp) or gv70_required(cp) or ev9_required(cp) or torque_ev_required(cp))
 
   @staticmethod
@@ -73,10 +85,10 @@ class CarInterface(CarInterfaceBase):
     if gv70_required(cp):
       return GV70Startup(cp, callbacks) if requested else None
     from opendbc.car.hyundai.ev9_longitudinal import candidate as ev9_candidate, qualified as ev9_qualified
-    from opendbc.car.hyundai.ev9_startup import EV9Startup
+    from opendbc.car.hyundai.ev9_pending_startup import EV9PendingStartup
     ev9_cp = ev9_candidate(cp, enabled=requested, is_release=False)
     if ev9_qualified(ev9_cp):
-      return EV9Startup(ev9_cp, callbacks, stock_cp=cp) if requested else None
+      return EV9PendingStartup(ev9_cp, callbacks, stock_cp=cp) if requested else None
     from opendbc.car.hyundai.torque_ev_startup import candidate as torque_ev_candidate, TorqueEVStartup
     torque_cp = torque_ev_candidate(cp, requested=requested, is_release=False)
     if torque_cp is not None:
@@ -87,6 +99,12 @@ class CarInterface(CarInterfaceBase):
     from opendbc.car.hyundai.radar_hda2_startup import RadarHDA2Startup, required as radar_hda2_required
     if radar_hda2_required(cp):
       return RadarHDA2Startup(cp, callbacks) if requested else None
+    from opendbc.car.hyundai.gv60_startup import GV60Startup, required as gv60_required
+    if gv60_required(cp):
+      return GV60Startup(cp, callbacks) if requested else None
+    from opendbc.car.hyundai.generic_hda2_startup import GenericHDA2Startup, required as generic_hda2_required
+    if generic_hda2_required(cp):
+      return GenericHDA2Startup(cp, callbacks) if requested else None
     from opendbc.car.hyundai.blended_longitudinal import startup_owner
     return startup_owner(cp, callbacks, requested=requested)
 
@@ -305,6 +323,11 @@ class CarInterface(CarInterfaceBase):
 
     if ret.openpilotLongitudinalControl:
       ret.safetyConfigs[-1].safetyParam |= HyundaiSafetyFlags.LONG.value
+      if (ret.flags & HyundaiFlags.CANFD and ret.flags & HyundaiFlags.CANFD_LKA_STEER_MSG and
+          not ret.flags & HyundaiFlags.CANFD_ANGLE_STEERING and candidate in (
+            CAR.KIA_CARNIVAL_4TH_GEN, CAR.KIA_CARNIVAL_2025,
+            CAR.KIA_CARNIVAL_HEV_4TH_GEN, CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN)):
+        ret.safetyConfigs[-1].safetyParam |= HyundaiSafetyFlags.CANFD_LKAS_DAMPING_100.value
     if ret.flags & HyundaiFlags.HYBRID:
       ret.safetyConfigs[-1].safetyParam |= HyundaiSafetyFlags.HYBRID_GAS.value
     elif ret.flags & HyundaiFlags.EV:
@@ -364,9 +387,16 @@ class CarInterface(CarInterfaceBase):
       ret.pcmCruise = True
       ret.alphaLongitudinalAvailable = not is_release and topology_owned(ret)
 
+    from opendbc.car.hyundai.gv60_startup import select_profile as gv60_select_profile
+    gv60_select_profile(ret, is_release=is_release)
+
     return ret
 
   def update(self, can_packets):
+    recovery = getattr(getattr(self, 'CC', None), 'angle_tx_recovery', None)
+    if recovery is not None:
+      can_packets = list(can_packets)
+      recovery.observe(can_packets, self.CC.frame)
     if (self.CS.pe_ready is not None or self.CS.gv70_camera_lead is not None or self.CS.ev9_camera_lead is not None or
         self.CS.ioniq6_camera_lead is not None or self.CS.torque_ev_camera_lead is not None or self.CS.forte_lkas_sources is not None):
       # This isolated optional parser must never join required controls health.

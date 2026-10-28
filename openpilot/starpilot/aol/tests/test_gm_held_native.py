@@ -50,6 +50,9 @@ def parse(card, now, gesture=None, counter=0, *, belt_unlatched=False, packets_o
                      {'INTERCEPTOR_GAS': 0., 'INTERCEPTOR_GAS2': 0., 'STATE': 0, 'COUNTER_PEDAL': counter})[1])
   sensor[5] = pedal_crc(sensor)
   packets.append((0x201, bytes(sensor), 0))
+  if card.CP.carFingerprint == CAR.CHEVROLET_BOLT_ACC_2022_2023_PEDAL and int(card.CP.safetyConfigs[0].safetyParam) == 0x1CD:
+    if now % 40_000_000 < 10_000_000:
+      packets.append(packer.make_can_msg('EBCMFrictionBrakeCmd', 2, {'RollingCounter': (now // 40_000_000) % 4}))
   if packets_only:
     return packets
   if now == NOW:
@@ -654,7 +657,7 @@ def test_actual_sd_belt_classification_wire_reaches_next_card_cycle(gesture, fau
       now = NOW + tick * 10_000_000
       current['now'], current['controls'] = now, False
       cs = receive_card(now, gesture if tick < 3 else None, tick < 3, (tick + 1) % 4)
-      if tick == 2 and fault is not None:
+      if tick == 2 and fault == 'immediate':
         assert card.aol_transport_feedback.failed and not card.aol_card_intent.allowed_latch
         return
       assert not card.aol_transport_feedback.failed and card.aol_card_intent.allowed_latch
@@ -679,8 +682,11 @@ def test_actual_sd_belt_classification_wire_reaches_next_card_cycle(gesture, fau
       assert native.observedMonoTime == NOW and native.validUntilMonoTime == NOW + 200_000_000
       assert native.requestedLateral and native.lateralAllowed and native.requestedLongitudinal and native.longitudinalAllowed
       assert not axis.longitudinalActive and not command.longActive
-      if fault is not None:
+      if fault == 'immediate':
         assert str(axis.faultReason) == 'critical'
+      elif fault == 'other_soft' and tick == 1:
+        assert str(axis.faultReason) == 'availabilityPause'
+        assert not axis.lateralActive and not command.latActive
       else:
         assert str(axis.faultReason) == 'none' and axis.lateralActive
         assert not sd.enabled  # Pedal/Cancel still disables ordinary LONG; rebuckling cannot resume it.
@@ -847,3 +853,110 @@ def test_rebuckled_belt_retention_requires_prior_paired_lat_only_proof(fault):
       assert decision.lateral_active and not decision.desired_longitudinal and not decision.longitudinal_active
     else:
       assert reset and feedback.failed and not card.aol_card_intent.allowed_latch
+
+
+def _sdgm_pedal_state(card, stamp, tick, gesture=None, manual=False):
+  from opendbc.car.gm.tests.test_volt_camera_control import feed_camera
+
+  packer = CANPacker(DBC[card.CP.carFingerprint][Bus.pt])
+  empty = SimpleNamespace(update=lambda _: None)
+  _, frames = feed_camera(empty, packer, stamp, counter=tick % 4, speed=16.0, brake=gesture == 'brake', regen=gesture == 'paddle', active=True, eps_status=1)
+  # Same recorded forward manual-mode report during Mary paddle withdrawal.
+  frames = [f for f in frames if f[0] not in (0x1F5, 0xBE, 0xC9)]
+  frames += [
+    packer.make_can_msg('ECMAcceleratorPos', 0, {'BrakePedalPos': 8 if gesture == 'brake' else 0}),
+    packer.make_can_msg('ECMEngineStatus', 0, {'CruiseMainOn': 1, 'BrakePressed': int(gesture == 'brake')}),
+  ]
+  frames.append(packer.make_can_msg('ECMPRDNL2', 0, {'PRNDL2': 4, 'ManualMode': int(manual)}))
+  if tick == 0:
+    card.CI.update([(stamp - 1_000_000, frames)])
+  cs = card.CI.update([(stamp, frames)])
+  assert cs.canValid and not cs.canTimeout
+  assert cs.regenBraking == (gesture == 'paddle')
+  assert cs.brakePressed == (gesture == 'brake')
+  assert str(cs.gearShifter) == ('manumatic' if manual else 'drive')
+  return cs
+
+
+@pytest.mark.parametrize('c9', (False, True))
+@pytest.mark.parametrize('gesture', ('brake', 'paddle'))
+@pytest.mark.parametrize('event_first', (False, True))
+@pytest.mark.parametrize('health_allowed', (False, True))
+def test_sdgm_alpha_pedal_does_not_erase_armed_lateral(c9, gesture, event_first, health_allowed):
+  from opendbc.car.gm.tests.test_volt_sdgm_control import sdgm_params
+  from openpilot.starpilot.aol.tests.test_gm import TestGmAol as GmFixture
+  from openpilot.starpilot.aol.wire import IntentState
+
+  with OpenpilotPrefix():
+    saved = Params()
+    saved.put_bool('AlwaysOnLateral', True, block=True)
+    card = GmFixture.card(sdgm_params(alpha=True, brake_c9=c9), saved)
+    try:
+      cp = card.CP
+      feedback = TransportPauseFeedback(cp)
+      cs = _sdgm_pedal_state(card, NOW, 0)
+      card.aol_card_intent.update(cs, fault_active=False, now_ns=NOW)
+      assert card.aol_card_intent.allowed_latch
+      sm, prior = peers(cp, card.slc_producer_session, NOW)
+      assert not feedback.observe(sm, cp, cs, NOW, latched=True, intent_producer_session=card.slc_producer_session)
+      now = NOW + 10_000_000
+      cs = _sdgm_pedal_state(card, now, 1, gesture, True)
+      native = replace(
+        prior,
+        observedMonoTime=now,
+        validUntilMonoTime=now + 200_000_000,
+        longitudinalAllowed=False,
+        pandaInventory=(replace(prior.pandaInventory[0], controlsAllowed=health_allowed),),
+      )
+      sm, _ = peers(cp, card.slc_producer_session, now, controls=health_allowed, native=native, sequence=2, long_active=False)
+      a = sm.messages['aolAxisState'].as_builder()
+      a.aolAxisState.faultEventMonoTime = NOW if event_first else now
+      # Event first: the last full desired request may precede the ordinary disengagement result.
+      a.aolAxisState.desiredLongitudinal = event_first
+      e = sm.messages['onroadEvents'].as_builder()
+      e.onroadEvents = [{'name': 'pedalPressed', 'userDisable': True, 'noEntry': True}]
+      sm = Peers([sm.messages['aolSafetyWire'], sm.messages['pandaStates'], a.as_reader(), e.as_reader()])
+      fault = feedback.observe(sm, cp, cs, now, latched=True, intent_producer_session=card.slc_producer_session)
+      card.aol_card_intent.update(cs, fault_active=fault, now_ns=now)
+      assert not fault and card.aol_card_intent.allowed_latch, (gesture, event_first, health_allowed, feedback.__dict__)
+      intent = IntentState(card.slc_producer_session, 2, now, now, now + 200_000_000, True, False, False, True, True)
+      d = decide_axes(
+        standard_lateral=False,
+        standard_longitudinal=False,
+        intent=intent,
+        native=native,
+        car_state=cs,
+        initialized=True,
+        model_ready=True,
+        no_entry=False,
+        immediate_disable=False,
+        dm_lockout=False,
+        pause_brake_mps=0.0,
+      )
+      assert d.lateral_active and not d.longitudinal_active
+      # Fresh independent LAT native acknowledgment after release; LONG stays disabled.
+      later = now + 10_000_000
+      cs = _sdgm_pedal_state(card, later, 2)
+      native = replace(native, observedMonoTime=later, validUntilMonoTime=later + 200_000_000, requestedLongitudinal=False)
+      sm, _ = peers(cp, card.slc_producer_session, later, controls=False, native=native, sequence=3, long_active=False)
+      assert not feedback.observe(sm, cp, cs, later, latched=True, intent_producer_session=card.slc_producer_session)
+      assert card.aol_card_intent.allowed_latch and not native.longitudinalAllowed
+    finally:
+      card.vehicle_startup.close()
+
+
+def test_factory_brake_clock_packets_are_scoped_and_follow_25hz_cycles():
+  for candidate in (CAR.CHEVROLET_BOLT_CC_2017, CAR.CHEVROLET_BOLT_CC_2018_2021,
+                    CAR.CHEVROLET_BOLT_CC_2022_2023, CAR.CHEVROLET_BOLT_ACC_2022_2023_PEDAL):
+    for removed in (False, True):
+      cp = params(candidate, pedal=True, camera=not removed, removed=removed)
+      card = SimpleNamespace(CP=cp)
+      for tick in range(9):
+        now = NOW + tick * 10_000_000
+        packets = parse(card, now, counter=tick % 4, packets_only=True)
+        clock = [row for row in packets if row[0] == 0x315]
+        expected = candidate == CAR.CHEVROLET_BOLT_ACC_2022_2023_PEDAL and not removed and tick % 4 == 0
+        assert len(clock) == int(expected)
+        if expected:
+          assert clock[0][2] == 2 and len(clock[0][1]) == 5
+          assert clock[0][1][4] & 3 == (now // 40_000_000) % 4

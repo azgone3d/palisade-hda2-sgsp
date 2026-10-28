@@ -43,7 +43,7 @@ from openpilot.starpilot.ui.pip_owner import FORMAT_PREFIX as PIP_FORMAT_PREFIX,
 from openpilot.starpilot.ui.pip_preferences import read_pip
 from openpilot.starpilot.ui.pip_render import PiPRenderer
 from openpilot.starpilot.ui.pip_sidecam import Signals, Rect
-from openpilot.starpilot.ui.onroad_customization import CAMERA_WIDGETS, placement, widget_size
+from openpilot.starpilot.ui.onroad_customization import CAMERA_WIDGETS, fit_to_road, placement, widget_size
 from openpilot.starpilot.ui.layout_preview_sidebar import SIDEBAR_WIDTH
 from openpilot.starpilot.ui.pip_warning import PiPWarningSource
 from openpilot.starpilot.spot_monitor.preferences import read_preferences as read_vasm_preferences
@@ -67,6 +67,7 @@ from openpilot.starpilot.ui.startup import slc_action_transport_enabled, validat
 from openpilot.starpilot.speed_limits.vision_gate import diagnostic_choice_enabled
 from openpilot.starpilot.ui.bluetooth_status import BluetoothStatusSource
 from openpilot.starpilot.ui.runtime_snapshot import RuntimeSnapshotAdapter, current_message, display_message
+from openpilot.starpilot.ui.runtime_software import deliver_software
 from openpilot.starpilot.ui.network_panel import NetworkPanelBridge
 from openpilot.starpilot.ui.slc_action_dispatch import SlcActionDispatcher
 from openpilot.starpilot.ui.onroad_state import AlertSize, BorderSignals, OnroadRequest, OnroadState, SlcUiRequest, is_personality_notice, is_lane_change_notice
@@ -87,14 +88,14 @@ from openpilot.starpilot.feature_runtime import enabled as feature_enabled
 from openpilot.starpilot.conditional_mode.preferences import PreferenceError, SavedPreferences, decode_preferences
 from openpilot.starpilot.conditional_mode.policy import ModeChoice
 from openpilot.starpilot.conditional_mode.ui_action import ConditionalUiActionOwner
-from openpilot.starpilot.ui.settings_state import compact_menu, Destination, SettingsAction, SettingsActionKind, SettingsState
+from openpilot.starpilot.ui.settings_state import Destination, SettingsAction, SettingsActionKind
 from openpilot.starpilot.ui.shell import ShellInput, ShellMode, ShellRequest, ShellSnapshot, ShellView
 from openpilot.starpilot.ui.software_state import DownloadLabel, SoftwareAction, SoftwareRequest
 from openpilot.starpilot.ui.toggles_state import Personality, ToggleKey, ToggleRequest
 from openpilot.system.ui.lib.application import MouseEvent, MousePos, gui_app
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.list_view import button_item, text_item
-from openpilot.system.ui.widgets.nav_widget import NavWidget
+from openpilot.starpilot.ui.compact_settings_page import StarCompactSettings
 
 NATIVE_SETTINGS_PANELS = (Destination.DEVICE, Destination.SOFTWARE, Destination.BLUETOOTH, Destination.TOGGLES, Destination.DEVELOPER)
 _FEATURE_SETTINGS_PANES = {
@@ -193,6 +194,8 @@ class StarShellSession:
         self.view.onroad.stock_confidence_reset = camera_owner.reset_stock_confidence_layer
         self.view.onroad.extra_overlays = lambda rect, state: camera_owner.render_model_source_layer(rect, show_long_indicator=None)
         self.view.onroad.compact_sidebar.personality_renderer = self._render_personality
+      else:
+        self.view.onroad.extra_overlays = lambda rect, state: camera_owner.render_model_source_layer(rect)
     except Exception:
       self.fonts.close()
       raise
@@ -280,7 +283,8 @@ class StarShellSession:
     self._wheel_personality = None
     self.conditional_actions: ConditionalUiActionOwner | None = None
     self.cruise_actions = CruiseActionPublisher()
-    self.favorites_owner = FavoritesOwner(ui_state.params, self._favorite_actions, self._favorite_authority, self._favorite_render_actions)
+    self.favorites_owner = FavoritesOwner(ui_state.params, self._favorite_actions, self._favorite_authority, self._favorite_render_actions,
+                                         current_action=lambda key: self._resolve_favorite_actions(frozenset((key,))).get(key))
     self.favorites = OnroadFavorites(self.fonts, self._favorite_request)
     self._favorite_snapshot = None
     self._favorite_data = None
@@ -298,12 +302,19 @@ class StarShellSession:
         self._projection_slc = SlcActionReceiver()
       except OSError:
         pass  # Car-screen speed-limit taps stay unavailable without affecting the native UI.
+    self.onroad_map = self.onroad_jetlink = None
+    if profile == Profile.LARGE:
+      from openpilot.starpilot.ui.onroad_map_layer import NativeMapLayer
+      self.onroad_map = NativeMapLayer(self.fonts, ui_state)
+      self.view.onroad.map_layer = self.onroad_map.render
+      from openpilot.starpilot.ui.onroad_jetlink_layer import NativeJetlinkLayer
+      self.onroad_jetlink = NativeJetlinkLayer(self.view.onroad.jetlink_status, ui_state)
+      self.view.onroad.jetlink_status = self.onroad_jetlink
 
   def _favorite_authority(self, *, allow_personality_notice: bool = False) -> bool:
     if getattr(ui_state, "replay_clock", None) is not None:
       return False
     if getattr(self, "_projection_tap", False):
-      # Projected taps need live onroad state, regardless of this screen's page or visibility.
       return bool(ui_state.started and display_message(ui_state.sm, 'carState', time.monotonic_ns(),
                                                        after_frame=ui_state.started_frame) is not None)
     if self._mode != ShellMode.ONROAD:
@@ -609,9 +620,10 @@ class StarShellSession:
     else:
       return False
     if success:
-      self._favorite_snapshot = self.favorites_owner.snapshot()
+      include_options = request.kind != "activate"
+      self._favorite_snapshot = self.favorites_owner.snapshot(include_options=include_options)
       self._favorite_data = asdict(self._favorite_snapshot)
-      self._favorite_include_options = True
+      self._favorite_include_options = include_options
       self.favorites.data = self._favorite_data
       self._favorite_read_at = time.monotonic()
     else:
@@ -655,11 +667,14 @@ class StarShellSession:
     if cp is None or not getattr(cp, "carFingerprint", ""):
       return False
     if group in ("lane_change", "conditional", "conditional_wheel", "switchback_wheel", "aol_wheel",
-                 "lane", "long", "toyota_cruise", "long_output", "slc", "torque", "aol", "vehicle"):
+                 "lane", "long", "toyota_cruise", "long_output", "slc", "torque", "aol", "vehicle", "toyota_radar"):
       if not preference_authority:
         return False
       if group == "toyota_cruise":
         from openpilot.starpilot.controllers.toyota_cruise import capability
+        return capability(cp) is not None
+      if group == "toyota_radar":
+        from openpilot.starpilot.car.toyota.radar_preferences import capability
         return capability(cp) is not None
       if group == "vehicle":
         from opendbc.car.toyota.interface import toyota_auto_hold_supported
@@ -1283,11 +1298,12 @@ class StarShellSession:
     snapshot = self.adapter.build(mode, self.selected, compact_y=self.compact_y,
                                   compact_scroll_x=self.compact_scroll_x, sidebar_expanded=self.sidebar_expanded,
                                   menu_only=self.profile == Profile.COMPACT and mode == ShellMode.SETTINGS,
-                                  onroad_view_only=mode == ShellMode.ONROAD)
+                                  onroad_view_only=mode == ShellMode.ONROAD, stopped_timer_profile=str(self.profile))
     if mode == ShellMode.ONROAD and self.profile == Profile.LARGE:
       width = getattr(self, '_onroad_page_width', 2160.0) - (SIDEBAR_WIDTH if snapshot.onroad.appearance.show_developer_sidebar else 0)
-      if snapshot.onroad.viewport_width != width:
-        snapshot = replace(snapshot, onroad=replace(snapshot.onroad, viewport_width=width))
+      fitted = fit_to_road(snapshot.onroad.customization, width)
+      if snapshot.onroad.viewport_width != width or fitted is not snapshot.onroad.customization:
+        snapshot = replace(snapshot, onroad=replace(snapshot.onroad, viewport_width=width, customization=fitted))
     if mode == ShellMode.HOME:
       now = time.monotonic()
       previous = getattr(self, "_home_model", None)
@@ -1299,7 +1315,8 @@ class StarShellSession:
         except (OSError, RuntimeError, ValueError):
           label = "Driving model unavailable"
         self._home_model = (now, label)
-      snapshot = replace(snapshot, home=replace(snapshot.home, model_label=label if previous is None or not 0 <= now - previous[0] < 1.0 else previous[1]))
+      local_label = label if previous is None or not 0 <= now - previous[0] < 1.0 else previous[1]
+      snapshot = replace(snapshot, home=replace(snapshot.home, model_label=snapshot.home.model_label or local_label))
     preview_flags = getattr(self, "_visual_preview_flags", frozenset())
     if mode == ShellMode.ONROAD and preview_flags:
       visual = preview_at(preview_flags,
@@ -1309,7 +1326,7 @@ class StarShellSession:
       drive = self.drive_state.snapshot()
       availability = tuple(replace(item, available=item.destination in
                                    (Destination.TOGGLES, Destination.DEVICE, Destination.SOFTWARE,
-                                    Destination.DRIVING_MODEL, Destination.APPEARANCE, Destination.GALAXY,
+                                    Destination.DRIVING_MODEL, Destination.DRIVING_CONTROLS, Destination.APPEARANCE, Destination.GALAXY,
                                     Destination.NETWORK, Destination.BLUETOOTH, Destination.VEHICLE, Destination.DEVELOPER) or
                                    (item.destination == Destination.FORCE_DRIVE and drive["available"]) or
                                    snapshot.device.offroad and item.destination == Destination.PAIR)
@@ -1365,6 +1382,8 @@ class StarShellSession:
         self._snapshot_cache = None
     snapshot = self.snapshot(mode)
     self._mode = mode
+    if mode == ShellMode.ONROAD:
+      snapshot = replace(snapshot, onroad=self.input.onroad.present(snapshot.onroad))
     if mode == ShellMode.ONROAD and self.slc_actions is not None:
       observation = snapshot.onroad.speed_limit
       snapshot = replace(snapshot, onroad=replace(snapshot.onroad, speed_limit=replace(
@@ -1690,6 +1709,12 @@ class StarShellSession:
     self._favorite_claimed = False
 
   def close(self) -> None:
+    if layer := getattr(self, 'onroad_jetlink', None):
+      layer.close()
+      self.onroad_jetlink = None
+    if layer := getattr(self, 'onroad_map', None):
+      layer.close()
+      self.onroad_map = None
     if receiver := getattr(self, '_projection_bookmarks', None):
       receiver.close()
       self._projection_bookmarks = None
@@ -1773,49 +1798,6 @@ class StarShellPage(Widget):
     super().hide_event()
 
 
-class StarCompactSettings(NavWidget):
-  def __init__(self, session: StarShellSession):
-    NavWidget.__init__(self)
-    self.session, self.mode = session, ShellMode.SETTINGS
-    from openpilot.system.ui.lib.scroll_panel2 import GuiScrollPanel2
-    self._panel = GuiScrollPanel2(horizontal=True)
-
-  def covers_camera(self, rect: rl.Rectangle) -> bool:
-    return bool(gui_app.get_active_widget() is self and self.enabled and self.is_visible and
-                not gui_app.mouse_events and not self.is_dismissing and self._drag_start_pos is None and
-                self._shown_callback is None and self._y_pos_filter.x == 0 and self._y_pos_filter.velocity.x == 0 and
-                self.rect.x == rect.x == 0 and self.rect.y == rect.y == 0 and
-                self.rect.width == rect.width == gui_app.width and self.rect.height == rect.height == gui_app.height)
-
-  def _update_state(self) -> None:
-    NavWidget._update_state(self)
-    target = -422 * round(-self._panel.get_offset() / 422)
-    # Project the pairing snapshot after rendering updates the panel offset.
-    paired = bool(self.session.adapter.ui_state.prime_state.is_paired())
-    self.session.compact_scroll_x = self._panel.update(self.rect, 20 + len(compact_menu(SettingsState(paired=paired))) * 422,
-                                                        snap_target=target)
-
-  def _render(self, rect) -> None:
-    self.session.render(self.mode, rect)
-
-  def _handle_mouse_event(self, mouse_event: MouseEvent) -> None:
-    NavWidget._handle_mouse_event(self, mouse_event)
-    if mouse_event.left_down and not mouse_event.left_pressed:
-      self.session.move(self.mode, mouse_event.pos.x - self.rect.x, mouse_event.pos.y - self.rect.y)
-    elif mouse_event.left_released and not rl.check_collision_point_rec(mouse_event.pos, self.rect):
-      self.session.cancel()
-
-  def _handle_mouse_press(self, mouse_pos: MousePos) -> None:
-    self.session.press(self.mode, mouse_pos.x - self.rect.x, mouse_pos.y - self.rect.y)
-
-  def _handle_mouse_release(self, mouse_pos: MousePos) -> None:
-    self.session.release(self.mode, mouse_pos.x - self.rect.x, mouse_pos.y - self.rect.y)
-
-  def hide_event(self) -> None:
-    self.session.cancel()
-    super().hide_event()
-
-
 class StarMainLayout(MainLayout):
   """Large existing app transitions/onboarding with full-canvas StarPilot views."""
 
@@ -1851,9 +1833,14 @@ class StarMainLayout(MainLayout):
     toggle_items = self._large_panels[Destination.TOGGLES]._scroller._items
     toggle_items.insert(2, text_item("Safe Mode", "N/A"))
     toggle_items.insert(7, text_item("Right Hand Driving", "N/A"))
+    from openpilot.common.hardware import HARDWARE
     from openpilot.starpilot.ui.starpilot_settings_adapter_large import StarPilotSettingsAdapterLarge
     for destination, owner in self._large_panels.items():
-      self._large_panels[destination] = StarPilotSettingsAdapterLarge(owner, self.star.fonts, destination.value.title(), self._settings_back)
+      if destination == Destination.DEVELOPER and HARDWARE.get_device_type() in ('mici', 'tici', 'tizi'):
+        from openpilot.starpilot.ui.spacepilot.large import SpacePilotDeveloperAdapter
+        self._large_panels[destination] = SpacePilotDeveloperAdapter(owner, self.star.fonts, self._settings_back, self._exit_spacepilot)
+      else:
+        self._large_panels[destination] = StarPilotSettingsAdapterLarge(owner, self.star.fonts, destination.value.title(), self._settings_back)
     self._network_bridge.presentation = StarPilotSettingsAdapterLarge(native_network, self.star.fonts, "Network", self._settings_back)
     self.star.set_navigation(on_settings=lambda: self._set_current_layout(MainState.SETTINGS),
                              on_home=self._set_mode_for_state,
@@ -1862,6 +1849,10 @@ class StarMainLayout(MainLayout):
     self.star.set_request_owner(self._deliver_settings_request)
     self.star._native_favorite_actions = self._native_favorites
     self.star._publish_bookmark = self._on_bookmark_clicked
+
+  def _exit_spacepilot(self) -> None:
+    gui_app.pop_widgets_to(self, instant=True)
+    self._set_mode_for_state()
 
   def _native_favorites(self):
     from openpilot.selfdrive.ui.layouts.settings.settings import PanelType
@@ -1975,31 +1966,8 @@ class StarMainLayout(MainLayout):
     return True
 
   def _deliver_software(self, request: SoftwareAction) -> bool:
-    from openpilot.selfdrive.ui.layouts.settings.settings import PanelType
-    fresh = self.star.adapter.build(ShellMode.SETTINGS, Destination.SOFTWARE, now_ns=time.monotonic_ns()).software
-    if request.request not in fresh.available_actions:
-      return False
-    owner = self._panel_owner(PanelType.SOFTWARE)
-    if request.request in (SoftwareRequest.CHECK_FOR_UPDATES, SoftwareRequest.DOWNLOAD_UPDATE):
-      expected = DownloadLabel.DOWNLOAD if request.request == SoftwareRequest.DOWNLOAD_UPDATE else DownloadLabel.CHECK
-      owner._update_state()
-      if (fresh.download_label != expected or owner._waiting_for_updater or
-          not owner._download_btn.action_item.enabled):
-        return False
-      from openpilot.system.ui.lib.multilang import tr
-      if owner._download_btn.action_item.text != tr(expected.value):
-        return False
-      owner._on_download_update()
-    elif request.request in (SoftwareRequest.FAST_UPDATE, SoftwareRequest.ROLLBACK):
-      owner._update_state()
-      owner._confirm_direct_update("rollback" if request.request == SoftwareRequest.ROLLBACK else "fast")
-    elif request.request == SoftwareRequest.OPEN_BRANCH_CHOOSER:
-      owner._on_select_branch(self._confirmed_offroad)
-    elif request.request == SoftwareRequest.OPEN_UNINSTALL_CONFIRMATION:
-      owner._on_uninstall(self._confirmed_offroad)
-    else:
-      return False
-    return True
+    return deliver_software(self, request, shell_mode=ShellMode, destination=Destination, clock=time,
+                            software_request=SoftwareRequest, download_label=DownloadLabel)
 
   def _render_main_content(self) -> None:
     if self._current_mode == MainState.ARABESQUE or self._current_mode == MainState.HOME and ui_state.is_body:
@@ -2123,18 +2091,23 @@ class StarMiciMainLayout(MiciMainLayout):
                                              lambda index: panel().request_personality(index),
                                              lambda: panel().request_experimental())
 
+  def _handle_transitions(self):
+    from openpilot.starpilot.ui.spacepilot.native import SpacePilotPage, Stage, live_witness
+    page = gui_app.get_active_widget()
+    if (isinstance(page, SpacePilotPage) and not page.closed and page.session.stage != Stage.CLOSED and
+        live_witness() is not None):
+      # Cancel only the cosmetic delayed startup redirect for a freshly parked
+      # game. The base movement transition and the game's own gates still run.
+      self._onroad_time_delay = None
+    super()._handle_transitions()
+
+  def _exit_spacepilot(self) -> None:
+    # An unsafe game exit must reveal the existing road/alert presentation now,
+    # including when engagement/alerts change while the car still reports Park.
+    gui_app.pop_widgets_to(self, instant=True)
+    self._scroller.scroll_to(self._onroad_layout.rect.x if ui_state.started else self._home_layout.rect.x, smooth=False)
+
   def _open_compact_destination(self, destination: Destination) -> None:
-    if destination == Destination.NETWORK and not self.star.connectivity_allowed():
-      from openpilot.selfdrive.ui.mici.widgets.button import GreyBigButton
-      from openpilot.system.ui.widgets.scroller import NavScroller
-      page = NavScroller()
-      current = self.star.snapshot(ShellMode.SETTINGS).home.network
-      label = {"wifi": "Wi-Fi", "ethernet": "Ethernet", "cell2G": "Cellular 2G", "cell3G": "Cellular 3G",
-               "cell4G": "Cellular 4G", "cell5G": "Cellular 5G"}.get(current, "No connection shown")
-      page._scroller.add_widgets([GreyBigButton("network", label),
-                                  GreyBigButton("network changes", "Use Offroad mode to change network settings")])
-      gui_app.push_widget(page)
-      return
     if destination == Destination.BLUETOOTH:
       from openpilot.starpilot.ui.bluetooth_compact import BluetoothCompact
       panel = self._compact_panels.get(destination)
@@ -2180,7 +2153,7 @@ class StarMiciMainLayout(MiciMainLayout):
       return
     panel = self._compact_panels.get(destination)
     if panel is None:
-      panel = panel_type()
+      panel = DeveloperLayoutMici(on_spacepilot_exit=self._exit_spacepilot) if destination == Destination.DEVELOPER else panel_type()
       if destination == Destination.DEVICE:
         from openpilot.starpilot.ui.display_compact import DisplayCompact
         from openpilot.starpilot.ui.replay_settings import replay_entry

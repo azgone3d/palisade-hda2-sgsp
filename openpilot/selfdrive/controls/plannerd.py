@@ -46,7 +46,7 @@ from openpilot.starpilot.speed_limits.runtime_settings import read_params as rea
 
 
 class SavedSlcLifecycle:
-  """Refresh saved admission; offset-only edits preserve the accepted drive limit."""
+  """Refresh saved admission; offsets and display units preserve driver choices."""
 
   def __init__(self, params, cp, environment):
     self.params, self.cp, self.environment = params, cp, dict(environment)
@@ -66,24 +66,29 @@ class SavedSlcLifecycle:
     vision = admitted and feature_enabled(self.params, self.cp, 'vision', self.environment, saved_slc=saved_slc)
     configuration = (admitted and not settings.errors, settings, vision,
                      vision_control_enabled(self.params, self.cp, saved_slc=saved_slc),
-                     feature_enabled(self.params, self.cp, 'vision', {}, saved_slc=saved_slc))
+                     feature_enabled(self.params, self.cp, 'vision', {}, saved_slc=saved_slc),
+                     self.params.get_bool('IsMetric'))
     if configuration == self.configuration:
       return self.runtime, False
+    previous_runtime = self.runtime
     if (self.runtime is not None and self.configuration is not None and
-        configuration == (self.configuration[0], replace(self.runtime.settings, offsets=settings.offsets),
-                          *self.configuration[2:])):
-      self.runtime.update_offsets(settings.offsets)
+        configuration[:-1] == (self.configuration[0], replace(self.runtime.settings, offsets=settings.offsets),
+                               *self.configuration[2:-1])):
+      self.runtime.update_offsets(settings.offsets, is_metric=configuration[5])
     else:
+      set_speed_after_ns = self.runtime.set_speed_after_ns if self.runtime is not None else 0
       if self.runtime is not None:
         self.runtime.reset()
       self.runtime = (SlcRuntime(settings, vision_enabled=vision,
                                  vision_control_qualified=configuration[3],
-                                 vision_display_qualified=configuration[4])
+                                 vision_display_qualified=configuration[4], is_metric=configuration[5])
                       if configuration[0] else None)
+      if self.runtime is not None:
+        self.runtime.set_speed_after_ns = set_speed_after_ns
     self.configuration = configuration
     if pending_actions is not None:
       pending_actions.clear()
-    if pending_cruise is not None:
+    if pending_cruise is not None and (self.runtime is None or self.runtime is not previous_runtime):
       pending_cruise.clear()
     return self.runtime, True
 
@@ -405,7 +410,7 @@ def starpilot_main():
   subscribed_services.append('deviceState')
   if conditional_host is not None:
     subscribed_services.append('starpilotRadarState')
-  optional_slc = ['slcDashboardObservation', 'slcVisionObservation', 'mapdOut'] if slc_available else []
+  optional_slc = ['slcDashboardObservation', 'slcVisionObservation', 'mapdOut', 'starpilotCarState'] if slc_available else []
   subscribed_services.extend(optional_slc)
   subscribed_services.append('starpilotNavigation')
   optional_conditional = ['starpilotNavigation'] + (['starpilotRadarState'] if conditional_host is not None else []) + optional_slc
@@ -440,7 +445,6 @@ def starpilot_main():
           collect_resume(force_stop_owner.resume, stop_resume_sock, messaging.recv_one_or_none,
                          now_ns=now_ns, drive_id=current_start_ns,
                          receive_clock=time.monotonic_ns if 'REPLAY' not in os.environ else None)
-        slc_ceiling = None
         planner_status = None
         slc_output = None
         drive_changed = current_start_ns > 0 and drive_start_ns > 0 and current_start_ns != drive_start_ns
@@ -499,7 +503,6 @@ def starpilot_main():
                      pending_slc_actions[0][0] <= now_ns else None)
           output = slc_runtime.step(sm, CP, now_ns=now_ns, request=request, cruise_event=cruise_event)
           slc_output = output
-          slc_ceiling = output.result.ceiling
           planner_status = output.message
           if output.command is not None:
             pm.send('slcCruiseCommand', output.command)
@@ -583,7 +586,7 @@ def starpilot_main():
                                               drive_id=current_start_ns, follow_seconds=follow_seconds,
                                               traffic_mode=traffic_mode, takeoff_enabled=faster_lead_takeoff)
         curve_result = update_curve_frame(longitudinal_planner, sm, CP, now_ns, host=curve_host,
-                                          cruise_ceiling=slc_ceiling, profile_tuning=profile_tuning,
+                                          profile_tuning=profile_tuning,
                                           traffic_mode=traffic_mode, lane_change_policy=lane_change_policy,
                                           global_braking_response=global_braking_response, selected_profiles=selected_profiles,
                                           conditional_handoff=conditional_handoff,

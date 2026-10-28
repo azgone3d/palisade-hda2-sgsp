@@ -10,12 +10,15 @@ from opendbc.car.gm.cancel_remap import aol_enabled
 def _diagnostic_mask(cp):
   try:
     if cp.brand == 'honda':
-      from opendbc.car.honda.stock_aol import qualified
+      from opendbc.car.honda.stock_aol import qualified, CLASSIC_BOSCH, RADARLESS
+      if (cp.carFingerprint in CLASSIC_BOSCH and cp.openpilotLongitudinalControl) or str(cp.fingerprintSource) == 'fixed':
+        return 0  # New alpha owner and explicit selection cannot borrow the recorded exception.
       from opendbc.car.honda.values import HondaFlags
       # Only the reported CAN2 interrupt-rate diagnostic is exempt. Qualification
       # requires a marked, supported, single-panda Bosch AOL configuration.
       # Other interrupt rates and mixed faults remain blocking.
-      return (1 << 3) if int(cp.flags) & int(HondaFlags.BOSCH) and qualified(cp, marked_only=True) else 0
+      return (1 << 3) if ((cp.carFingerprint in CLASSIC_BOSCH or cp.carFingerprint in RADARLESS) and
+                         int(cp.flags) & int(HondaFlags.BOSCH) and qualified(cp, marked_only=True)) else 0
     if cp.brand == 'hyundai':
       from opendbc.car.hyundai.values import CAR, HyundaiFlags
       if cp.carFingerprint != CAR.HYUNDAI_SONATA_HYBRID:

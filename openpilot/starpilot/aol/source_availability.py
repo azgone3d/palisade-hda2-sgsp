@@ -28,11 +28,11 @@ def stock_lateral_role(self, CS, native, intent=None, *, allow_independent_cance
   if allow_independent_brake:
     from opendbc.car.hyundai.canfd_angle_aol import command_allowed
     from opendbc.car.hyundai.canfd_stock_aol import qualified as stock_canfd_qualified
-    from openpilot.starpilot.car.toyota.aol import qualified as toyota_qualified
+    from openpilot.starpilot.car.toyota.aol import qualified as toyota_qualified, held_lateral_pedal
 
     settings = getattr(self, 'aol_settings', None)
     previous = getattr(self, 'aol_axis_decision', None)
-    brake_role = bool(settings is not None and settings.enabled and CS.brakePressed and not CS.regenBraking and
+    brake_role = held_lateral_pedal(self, CS) or bool(settings is not None and settings.enabled and CS.brakePressed and not CS.regenBraking and
       previous is not None and previous.lateral_active and previous.native_acknowledged and not previous.longitudinal_active and
       (toyota_qualified(self.CP, marked_only=True) and CS.standstill and not CS.cruiseState.enabled and
        CS.gearShifter == car.CarState.GearShifter.drive and isfinite(CS.vEgoRaw) and isfinite(CS.vEgo) or
@@ -57,7 +57,8 @@ def stock_lateral_role(self, CS, native, intent=None, *, allow_independent_cance
       self.sm['driverMonitoringState'].alertLevel == AlertLevel.three or
       self.sm['driverMonitoringState'].lockout or self.sm['driverMonitoringState'].alwaysOnLockout or
       not stock_lateral_off(self.CP, CS, native, allow_independent_cancel=cancel_role,
-                            allow_independent_brake=brake_role)):
+                            allow_independent_brake=brake_role,
+                            allow_independent_gas=brake_role and self.CP.brand == 'toyota' and CS.gasPressed)):
     return False
   accepted = intent if intent is not None else anchor[2]
   companion = getattr(self, 'aol_intent_companion', None)
@@ -111,12 +112,19 @@ def ordinary_source_availability(self, CS, now_ns, native=None, *, replay: bool,
   anchor = getattr(self, 'aol_ordinary_source_anchor', None)
   companion = getattr(self, 'aol_intent_companion', None)
   events = self.events.to_msg()
+  from openpilot.starpilot.car.gm.aol import held_sdgm_lateral_pedal
+  from openpilot.starpilot.car.toyota.aol import held_lateral_pedal
+  toyota_pedal = held_lateral_pedal(self, CS)
+  held_pedal = held_sdgm_lateral_pedal(self, CS) or toyota_pedal
+  if held_pedal:
+    events = [event for event in events if not (event.name == EventName.pedalPressed and
+      event.userDisable and not event.softDisable and not event.immediateDisable)]
   stock_user = None
   if any(event.name in (EventName.pcmDisable, EventName.cruiseDisabled) and event.userDisable for event in events):
     # Resolve the native value once, as this classifier already does below.
     # Normal healthy frames never enter this nominal stock-role branch.
     native = native or native_provider(self.sm, self.CP, now_ns=now_ns, axis_session_id=self.aol_session_id)
-    if stock_lateral_role(self, CS, native):
+    if stock_lateral_role(self, CS, native, allow_independent_brake=held_pedal):
       stock_user = stock_lateral_user_event(self.CP)
       events = [event for event in events if not (event.name == stock_user and event.userDisable and
         not event.softDisable and not event.immediateDisable)]
@@ -190,7 +198,8 @@ def ordinary_source_availability(self, CS, now_ns, native=None, *, replay: bool,
     bool(getattr(self, 'car_state_retained_valid', False) or held_metadata)),)
   if any(not valid or not sample.canValid or sample.canTimeout or sample.steerFaultPermanent or
          sample.steerFaultTemporary or sample.accFaulted or sample.doorOpen or sample.seatbeltUnlatched or
-         sample.brakePressed or sample.regenBraking or sample.gasPressed or physical_cancel(sample, self.CP) or
+         (sample.brakePressed or sample.regenBraking) and not held_pedal or
+         sample.gasPressed and not toyota_pedal or physical_cancel(sample, self.CP) or
          sample.gearShifter not in (car.CarState.GearShifter.drive, car.CarState.GearShifter.sport,
                                    car.CarState.GearShifter.low, car.CarState.GearShifter.brake)
          for sample, valid in samples):
@@ -234,7 +243,8 @@ def ordinary_source_availability(self, CS, now_ns, native=None, *, replay: bool,
     return False
   native = native or native_provider(self.sm, self.CP, now_ns=now_ns, axis_session_id=self.aol_session_id)
   lateral_intent_only = bool(proof[8] and not proof[9] and not self.enabled)
-  if (native is None or lateral_intent_only and not (accepted.allowedLatch and accepted.lateralArmed and
+  if (native is None or held_pedal and (native.requestedLongitudinal or native.longitudinalAllowed) or
+      lateral_intent_only and not (accepted.allowedLatch and accepted.lateralArmed and
         not accepted.pauseLateral and not getattr(self, 'aol_dm_lateral_inhibit', False) and
         native.requestedLateral and native.lateralAllowed) or
       not healthy_transport(self.sm, self.CP, CS, self.aol_session_id, now_ns, native) or

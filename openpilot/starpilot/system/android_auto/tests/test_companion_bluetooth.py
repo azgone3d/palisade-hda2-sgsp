@@ -82,8 +82,7 @@ class CompanionTests(unittest.TestCase):
     host._lock = threading.RLock()
     host.config = {'receiver_address': ADAPTER, 'companion_address': 'saved-car', 'companion_name': 'My car'}
     host._shared_bluetooth_owner = self.owner
-    host._phone = lambda: self.phone
-    with patch('openpilot.starpilot.system.android_auto.identity.save_config') as save:
+    with patch.object(host, '_phone', return_value=self.phone), patch('openpilot.starpilot.system.android_auto.identity.save_config') as save:
       host.companion_bluetooth_action('connect', CAR, SESSION)
       host.companion_bluetooth_action('disconnect', CAR, SESSION)
       save.assert_not_called()
@@ -279,6 +278,41 @@ class CompanionTests(unittest.TestCase):
       save.assert_not_called()
     self.assertEqual(host.config['companion_address'], '')
 
+  def test_forgetting_the_selected_car_stops_its_retry_then_deletes_it(self):
+    from openpilot.starpilot.system.android_auto.supervisor import Supervisor
+    host = Supervisor.__new__(Supervisor)
+    host._lock = threading.RLock()
+    host.config = {'receiver_address': ADAPTER}
+    host._shared_bluetooth_owner = self.owner
+    host.auto = Mock()
+    alive = {'value': True}
+    host._session_alive = Mock(side_effect=lambda: alive['value'])
+    host.stop = Mock(side_effect=lambda: alive.update(value=False))
+    host.forget_receiver = Mock(return_value=True)
+    self.owner.request = Mock(return_value={'devices': []})  # test double
+    self.assertEqual(host.companion_bluetooth_action('forget', ADAPTER.lower(), SESSION), {'devices': []})
+    host.auto.manual_stop.assert_called_once_with(True)
+    host.stop.assert_called_once_with()
+    self.owner.request.assert_called_once_with('forget', address=ADAPTER.lower())
+    host.forget_receiver.assert_called_once_with(ADAPTER.lower())
+
+  def test_forgetting_the_selected_car_waits_out_pairing_and_expired_sessions(self):
+    from openpilot.starpilot.system.android_auto.supervisor import Supervisor
+    host = Supervisor.__new__(Supervisor)
+    host.config = {'receiver_address': ADAPTER}
+    host._shared_bluetooth_owner = self.owner
+    host.stop = Mock()
+    self.lease.session = SESSION
+    with self.assertRaises(Rejected) as error:
+      host.companion_bluetooth_action('forget', ADAPTER, SESSION)
+    self.assertEqual(error.exception.code, 'busy')
+    self.lease.session = None
+    self.state['valid'] = False
+    with self.assertRaises(Rejected) as error:
+      host.companion_bluetooth_action('forget', ADAPTER, SESSION)
+    self.assertEqual(error.exception.code, 'session_expired')
+    host.stop.assert_not_called()
+
   def daemon_call(self, operation='connect', address=CAR, valid=True, parked=True):
     supervisor = SimpleNamespace(companion_bluetooth_action=self.owner.companion_action,
       bind_source_session=lambda session: self.fail('Companion command must not rebind projection source'))
@@ -307,7 +341,7 @@ class CompanionTests(unittest.TestCase):
     self.assertFalse(self.lease.released)
 
   def test_power_off_goes_through_the_owner_and_power_on_is_a_no_op(self):
-    self.owner.request = Mock(return_value={'powered': False})  # ty: ignore[invalid-assignment]  # test double
+    self.owner.request = Mock(return_value={'powered': False})  # test double
     self.assertEqual(self.owner.companion_power(False, SESSION), {'powered': False})
     self.owner.request.assert_called_once_with('power', enabled=False, session=SESSION)
     self.owner.request.reset_mock()
@@ -339,13 +373,13 @@ class CompanionTests(unittest.TestCase):
       return daemon.handle(Mock(wraps=supervisor), request, Mock(wraps=SimpleNamespace(valid=lambda source: valid)), parked=lambda: parked)
 
   def test_daemon_power_command_requires_proof_park_and_a_boolean(self):
-    self.owner.request = Mock(return_value={'powered': False})  # ty: ignore[invalid-assignment]  # test double
+    self.owner.request = Mock(return_value={'powered': False})  # test double
     self.assertEqual(self.power_call(), {'handled': True, 'bluetooth': {'powered': False}})
     self.assertEqual(self.power_call(parked=False), {'handled': True, 'error_code': 'park_required'})
     with self.assertRaises(RuntimeError):
       self.power_call(valid=False)
     with self.assertRaises(ValueError):
-      self.power_call(enabled='off')  # ty: ignore[invalid-argument-type]  # wrong type on purpose
+      self.power_call(enabled='off')  # wrong type on purpose
     self.lease.session = SESSION
     self.assertEqual(self.power_call(), {'handled': True, 'error_code': 'busy', 'message': 'Finish Android Auto pairing first'})
     self.owner.phone_lease = None

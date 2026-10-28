@@ -1,92 +1,139 @@
+"""Controller-timed automatic pulses and the stationary manual confirmation rhythm."""
 from dataclasses import replace
-from unittest.mock import Mock, patch
 
 import pyray as rl
 import pytest
 
-from openpilot.starpilot.ui.onroad_compact_widgets import CompactHudRenderer
-from openpilot.starpilot.ui.onroad_large_widgets import UnifiedSpeedWidget
 from openpilot.starpilot.ui.onroad_state import ObservationKind, OnroadState, SpeedLimitObservation
 from openpilot.starpilot.ui.speed_limit_pulse import SpeedLimitPulse
-
-
-def state(limit=15.6464, source="vision", **changes):
-  observation = SpeedLimitObservation(kind=ObservationKind.VALID, source=source, speed_limit_mps=limit)
-  return replace(OnroadState(True, True, 10., 80., observation, drive_frame=1), **changes)
 
 
 def rgba(color):
   return tuple(color) if isinstance(color, tuple) else (color.r, color.g, color.b, color.a)
 
 
-@pytest.mark.parametrize("metric", [False, True])
-def test_changed_vision_number_pulses_once_with_original_one_second_easing(metric):
+def state(automatic=True, **changes):
+  obs = SpeedLimitObservation(ObservationKind.VALID, 'dashboard', 20., pending_speed_limit_mps=20.,
+                             automatic_adoption_pending=automatic, pending_since_ns=10_000_000_000)
+  return replace(OnroadState(True, False, 10., 80., obs, drive_frame=1), **changes)
+
+
+def test_three_slow_flashes_stop_at_the_controller_deadline():
   pulse = SpeedLimitPulse()
-  current = state(metric=metric)
+  pulse.update(state(), 10.25)
+  assert pulse.start_time == 10.
+  for now in (10., 11., 12., 13., 14.):
+    assert rgba(pulse.color(rl.WHITE, now)) == rgba(rl.WHITE)
+  for now in (10.5, 11.5, 12.5):
+    assert rgba(pulse.color(rl.WHITE, now)) == (188, 132, 255, 255)
+
+
+def test_manual_confirmation_repeats_two_gentle_pulses_for_ten_seconds_without_tinting_content():
+  pulse = SpeedLimitPulse()
+  pulse.update(state(False), 10.)
+  base = rl.Color(244, 247, 245, 96)
+  for cycle in (0., 3.2, 6.4):
+    for elapsed in (.35, 1.25):
+      now = 10. + cycle + elapsed
+      pulse.update(state(False), now)
+      assert pulse.confirmation_strength(now) == pytest.approx(1.)
+      assert rgba(pulse.color(base, now)) == rgba(base)
+    for elapsed in (0., .8, 1.6, 2.1, 2.59, 3., 3.19):
+      assert rgba(pulse.color(base, 10. + cycle + elapsed)) == rgba(base)
+  assert pulse.confirmation_strength(9.9) == 0.
+  assert pulse.confirmation_strength(19.95) > .9
+  assert pulse.confirmation_strength(20.) == 0.
+  assert pulse.confirmation_strength(22.75) == 0.
+
+
+@pytest.mark.parametrize('kind', list(ObservationKind))
+def test_finished_or_unavailable_manual_decision_stops_pulsing(kind):
+  pulse = SpeedLimitPulse()
+  current = state(False)
   pulse.update(current, 10.)
-  assert rgba(pulse.color(rl.WHITE, 10.)) == rgba(rl.WHITE)
-  assert rgba(pulse.color(rl.WHITE, 10.5)) == (188, 132, 255, 255)
-  assert rgba(pulse.color(rl.WHITE, 11.)) == rgba(rl.WHITE)
-  for frame in range(100):
-    pulse.update(state(15.6464 + (frame % 2) * .01, metric=metric), 11. + frame / 20)
-    assert pulse.start_time == 10.
-  pulse.update(state(13.4112, metric=metric), 20.)
+  observation = replace(current.speed_limit, kind=kind, speed_limit_mps=20. if kind == ObservationKind.VALID else None,
+                        pending_speed_limit_mps=None, last_received_speed_limit_mps=20.)
+  pulse.update(replace(current, speed_limit=observation), 10.1)
+  assert rgba(pulse.color(rl.WHITE, 10.35)) == rgba(rl.WHITE)
+  assert pulse.start_time == -float('inf')
+
+
+def test_manual_widget_reappearance_and_new_decision_use_controller_time():
+  pulse = SpeedLimitPulse()
+  pulse.update(state(False), 10., visible=False)
+  pulse.update(state(False), 13.2)
+  assert pulse.confirmation_strength(13.55) == pytest.approx(1.)
+  current = state(False)
+  current = replace(current, speed_limit=replace(current.speed_limit, pending_since_ns=13_000_000_000,
+                                               speed_limit_mps=25., pending_speed_limit_mps=25.))
+  pulse.update(current, 13.)
+  assert rgba(pulse.color(rl.WHITE, 13.)) == rgba(rl.WHITE)
+  assert pulse.confirmation_strength(13.35) == pytest.approx(1.)
+
+
+def test_missing_pending_timestamp_starts_once_and_resets_for_a_new_drive():
+  pulse = SpeedLimitPulse()
+  current = state(False)
+  current = replace(current, speed_limit=replace(current.speed_limit, pending_since_ns=0))
+  pulse.update(current, 10.)
+  pulse.update(current, 10.35)
+  assert pulse.confirmation_strength(10.35) == pytest.approx(1.)
+  pulse.update(replace(current, drive_frame=2), 20.)
   assert pulse.start_time == 20.
 
 
-def test_source_reacquisition_missing_hidden_and_units_do_not_retrigger_same_number():
+def test_switching_between_manual_and_automatic_uses_the_current_rhythm():
   pulse = SpeedLimitPulse()
-  pulse.update(state(source="map"), 0.)
-  pulse.update(state(), 1.)
-  assert rgba(pulse.color(rl.WHITE, 1.5)) == rgba(rl.WHITE)
-  pulse.update(state(13.4112), 2.)
-  pulse.update(state(13.4112, metric=True), 2.1)
-  assert pulse.start_time == 2.
-  for hidden in (True, False):
-    current = state(13.4112)
-    pulse.update(current if hidden else replace(current, speed_limit=SpeedLimitObservation()), 2.2, visible=not hidden)
-    pulse.update(current, 2.3)
-    assert rgba(pulse.color(rl.WHITE, 2.5)) == rgba(rl.WHITE)
-  pulse.update(replace(current, drive_frame=2), 3.)
-  assert pulse.start_time == 3.
-
-
-@pytest.mark.parametrize("compact", [False, True])
-def test_compact_sign_pulses_while_large_numbers_and_frame_stay_stable(compact):
-  fonts = Mock()
-  fonts.measure.return_value = Mock(width=20, height=20)
-  fonts.vertical_ink.side_effect = lambda text, role, size: (0., size * .7)
-  fonts.horizontal_ink.return_value = (0., 20.)
-  shown = state()
-  shown = replace(shown, speed_limit=replace(shown.speed_limit, accepted_adjusted_limit_mps=shown.speed_limit.speed_limit_mps))
-  shown = replace(shown, appearance=replace(shown.appearance, show_speed_limit_sign=True))
-  renderer = CompactHudRenderer(fonts, Mock()) if compact else UnifiedSpeedWidget(fonts)
-  with patch("time.monotonic", return_value=10.) as clock, \
-       patch.object(rl, "draw_rectangle_rounded_lines_ex"), patch.object(rl, "draw_rectangle_rounded"), patch.object(rl, "draw_line_ex"), \
-       patch("openpilot.starpilot.ui.onroad_large_widgets.draw_control_card") as card:
-    def render():
-      if isinstance(renderer, CompactHudRenderer):
-        renderer._speed_limit_sign(shown)
-      else:
-        renderer.render(rl.Rectangle(0, 0, 176, 196), shown)
-    render()
-    clock.return_value = 10.5
-    fonts.draw.reset_mock()
-    render()
-    numeric = next(call for call in fonts.draw.call_args_list if call.args[0] == "35")
-    if compact:
-      assert rgba(numeric.args[-1]) == (188, 132, 255, 255)
-    else:
-      assert rgba(card.call_args.kwargs["border"]) == (53, 67, 77, 255)
-      assert rgba(numeric.args[-1]) == rgba(rl.WHITE)
-
-
-def test_transient_missing_sample_keeps_changed_sign_pulse_and_map_changes_pulse():
-  pulse = SpeedLimitPulse()
-  pulse.update(state(source="map"), 10.)
-  pulse.update(replace(state(), speed_limit=SpeedLimitObservation()), 10.1)
-  pulse.update(state(source="map"), 10.2)
-  assert pulse.start_time == 10.
+  pulse.update(state(), 10.)
+  pulse.update(state(False), 10.)
+  assert pulse.confirmation_strength(10.35) == pytest.approx(1.)
+  pulse.update(state(), 10.)
   assert rgba(pulse.color(rl.WHITE, 10.5)) == (188, 132, 255, 255)
-  pulse.update(state(13.4112, source="dashboard"), 11.)
-  assert pulse.start_time == 11.
+  assert rgba(pulse.color(rl.WHITE, 13.)) == rgba(rl.WHITE)
+
+
+def test_reappearing_widget_uses_remaining_controller_time():
+  pulse = SpeedLimitPulse()
+  pulse.update(state(), 10., visible=False)
+  pulse.update(state(), 12.)
+  assert rgba(pulse.color(rl.WHITE, 12.5)) == (188, 132, 255, 255)
+  assert rgba(pulse.color(rl.WHITE, 13.)) == rgba(rl.WHITE)
+
+
+def display_state(limit=20., **changes):
+  current = state()
+  return replace(current, speed_limit=replace(current.speed_limit, speed_limit_mps=limit,
+    pending_speed_limit_mps=None, automatic_adoption_pending=False, action_enabled=False, pending_since_ns=0), **changes)
+
+
+def test_display_only_new_limit_pulses_without_restarting_on_repeated_messages():
+  pulse = SpeedLimitPulse()
+  pulse.update(display_state(), 10.)
+  pulse.update(display_state(), 10.5)
+  assert rgba(pulse.color(rl.WHITE, 10.5)) == (188, 132, 255, 255)
+  pulse.update(display_state(), 13.5)
+  assert rgba(pulse.color(rl.WHITE, 13.5)) == rgba(rl.WHITE)
+  pulse.update(display_state(25.), 14.)
+  pulse.update(display_state(25.), 14.5)
+  assert rgba(pulse.color(rl.WHITE, 14.5)) == (188, 132, 255, 255)
+
+
+def test_display_only_hidden_stale_and_reappearance_do_not_invent_new_limit():
+  pulse = SpeedLimitPulse()
+  pulse.update(display_state(), 10., visible=False)
+  pulse.update(display_state(), 10.5)
+  assert rgba(pulse.color(rl.WHITE, 10.5)) == rgba(rl.WHITE)
+  current = display_state()
+  stale = replace(current, speed_limit=replace(current.speed_limit, kind=ObservationKind.STALE,
+                  speed_limit_mps=None, last_received_speed_limit_mps=25.))
+  pulse.update(stale, 11.)
+  assert rgba(pulse.color(rl.WHITE, 11.5)) == rgba(rl.WHITE)
+  pulse.update(display_state(25.), 12.)
+  assert rgba(pulse.color(rl.WHITE, 12.5)) == rgba(rl.WHITE)
+
+
+def test_display_only_new_drive_can_highlight_its_first_limit():
+  pulse = SpeedLimitPulse()
+  pulse.update(display_state(), 10.)
+  pulse.update(display_state(drive_frame=2), 20.)
+  assert rgba(pulse.color(rl.WHITE, 20.5)) == (188, 132, 255, 255)

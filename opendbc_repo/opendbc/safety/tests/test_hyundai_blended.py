@@ -220,4 +220,6 @@ class TestHyundaiBlendedStock(unittest.TestCase):
       self.assertFalse(self.safety.get_relay_malfunction())
       if experience == 32:
         self.assertFalse(self.safety.safety_tx_hook(common.make_msg(1, 0x485, dat=bytes.fromhex('5030020000000000'))))
+      self.safety.safety_rx_hook(common.make_msg(0, 0x50, 16))
+      self.assertTrue(self.safety.get_relay_malfunction())
     self.safety.set_alternative_experience(0)

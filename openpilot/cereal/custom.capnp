@@ -213,6 +213,19 @@ struct StarPilotCarState @0xf35cc4560bbf6ec2 {
   appliedEvidence @34 :LearningAppliedEvidence;
   fordLearningEvidence @35 :FordLearningEvidence;
   learningApplication @36 :LearningApplication;
+  feedbackPublication @37 :FeedbackPublication;
+  toyotaCruise @38 :ToyotaCruise;
+
+  struct ToyotaCruise {
+    version @0 :UInt16;
+    status @1 :Text;
+    targetKph @2 :Float32;
+    nativeKph @3 :Float32;
+    nativeClusterKph @4 :Float32;
+    sessionId @5 :Text;
+    acceptedMonoTime @6 :UInt64;
+    approvedTargetMps @7 :Float32;
+  }
 
   struct Gps {
     sourceMonoTime @0 :UInt64;  # CAN observation converted to CLOCK_MONOTONIC
@@ -228,6 +241,26 @@ struct StarPilotCarState @0xf35cc4560bbf6ec2 {
     unixTimestampMillis @10 :Int64;
     hasFix @11 :Bool;
     vNED @12 :List(Float32);
+  }
+
+  struct FeedbackPublication {
+    version @0 :UInt16;
+    cardSession @1 :Data; # Exactly16 bytes, never default-empty proof.
+    publicationSequence @2 :UInt64;
+    publicationMonoTime @3 :UInt64;
+    sourceCarStateMonoTime @4 :UInt64; # Held AppliedEvidence.state_ns.
+    outputKnown @5 :Bool;
+    outputControlMonoTime @6 :UInt64;
+    outputApplyMonoTime @7 :UInt64;
+    outputNativeIdentity @8 :Text; # Optional reference only; child verifies original native proof.
+    outputCarrierSequence @9 :UInt64; # Held AppliedEvidence.carrier_frame, NOT a local apply serial.
+    reportedTorque @10 :Float32;
+    outputValid @11 :Bool; # Exact CO Event.valid, not held evidence validity.
+    coBodySha256 @12 :Data; # Exactly32 bytes.
+    applyEvidenceSha256 @13 :Data; # Exactly32 bytes when known; empty when unknown.
+    sourceEpoch @14 :Text;
+    cpSha256 @15 :Text;
+    carrierObservedMonoTime @16 :UInt64; # Exact held carrier receipt; never CO/apply relabel.
   }
 }
 
@@ -302,6 +335,13 @@ struct SlcState @0xa1680744031fdb2d {
   overrideBasis @48 :Text; # none/pedal/persistent; qualified contribution only
   retainedOverride @49 :Bool;
   commandActionSequenceId @50 :UInt64; # UI sequence that issued this command
+  automaticAdoptionPending @51 :Bool;
+  pendingSinceMonoTime @52 :UInt64;
+  # Presentation only; zero means no limit received in this session.
+  lastReceivedSpeedLimit @53 :Float32;
+  lastReceivedSource @54 :Text;
+  lastReceivedAdjustedLimit @55 :Float32;
+  acceptedMonoTime @56 :UInt64;
   struct SourceReading {
     source @0 :Text;
     enabled @1 :Bool;
@@ -612,7 +652,11 @@ struct StarPilotModelDataV2 @0x80ae746ee2596b11 {
   }
 }
 
-struct CustomReserved5 @0xa5cd762cd951a455 {
+struct StarPilotSteeringTracking @0xa5cd762cd951a455 {
+  version @0 :UInt16;
+  sourceReceipt @1 :AutomaticLearningSourceReceipt;
+  trial @2 :LiveTrackingTrial;
+  restore @3 :LiveTrackingRestore;
 }
 
 struct CustomReserved6 @0xf98d843bfd7004a3 {
@@ -797,6 +841,8 @@ struct StarPilotLateralState @0xc2243c65e0340384 {
   laneCentering @8 :LaneCentering;
   learningEvidence @9 :LearningControlEvidence;
   learningApplication @10 :LearningApplication;
+  feedbackConsumption @11 :FeedbackConsumption;
+  trackingApplication @12 :LiveTrackingApplication;
 
   struct LaneCentering {
     version @0 :UInt16;
@@ -806,6 +852,25 @@ struct StarPilotLateralState @0xc2243c65e0340384 {
     requestedCorrection @4 :Float32;
     appliedCorrection @5 :Float32;
     reason @6 :Text;
+  }
+
+  struct FeedbackConsumption {
+    version @0 :UInt16;
+    controlMonoTime @1 :UInt64;
+    consumedPublicationMonoTime @2 :UInt64;
+    consumedRecvFrame @3 :UInt64;
+    consumedReceiptMonoTime @4 :UInt64;
+    consumedSeen @5 :Bool;
+    consumedValid @6 :Bool;
+    coBodySha256 @7 :Data; # Exactly32 bytes.
+    reportedTorque @8 :Float32;
+    requestTorque @9 :Float32;
+    latActive @10 :Bool;
+    inputSafetyLimited @11 :Bool;
+    publishedSafetyLimited @12 :Bool;
+    priorPublishControlMonoTime @13 :UInt64;
+    sourceEpoch @14 :Text;
+    cpSha256 @15 :Text;
   }
 }
 
@@ -824,10 +889,12 @@ struct SlcCruiseCommand @0xbd443b539493bc68 {
   expiresMonoTime @11 :UInt64;
   expectedSelectedMps @12 :Float32;
   targetMps @13 :Float32;
+  source @14 :Text;
 
   enum Kind {
     unknown @0;
     adoptAcceptedHigherLimit @1;
+    adoptAcceptedLimit @2;
   }
 }
 
@@ -1188,6 +1255,8 @@ struct LearningControlEvidence @0xf2447170bb68f358 {
   appliedProfileValidUntilMonoTime @43 :UInt64;
   effectTrace @44 :FullEffectTrace;
   effectPrepareMonoTime @45 :UInt64; # Exact MONOTONIC owner tick, not carControl publication.
+  vehicleModelAnchor @46 :List(Float64); # Actual owner stable (sR,cF,cR), empty on old senders.
+  liveAppliedCoordinates @47 :List(Float64); # Actual same-frame live full30 hooks, never offered target.
   struct FullEffectTrace {
     version @0 :UInt16;
     envelope @1 :AutomaticRuntimeProfile.FullSurfaceEnvelope;
@@ -1416,4 +1485,51 @@ struct LearningTorqueProjection @0xf078f562cbce49ad {
   canData @22 :Data;
   reportedTorque @23 :Float64;
   unlimitedRawPresent @24 :Bool;
+}
+
+# Live tracking trials are a separate protocol, never ReplayValidation.
+struct LiveTrackingBinding @0x9f853f7eb4110c72 {
+ identity @0 :Text; cpSha256 @1 :Text; controllerRevision @2 :Text;
+ baselineRevision @3 :Text; sourceEpoch @4 :Text; resetGeneration @5 :Text;
+ calibrationGeneration @6 :Text; vehicleModelGeneration @7 :Text;
+ nativeIdentity @8 :Text; physicalModelRevision @9 :Text; persistentSourceEpoch @10 :Text;
+ nativeRequired @11 :Bool;
+}
+struct LiveTrackingTrial @0xe6f67224bc0ee1a3 {
+ version @0 :UInt16; protocol @1 :Text; binding @2 :LiveTrackingBinding;
+ trialId @3 :Text; sequence @4 :UInt64; phase @5 :Text; group @6 :Text;
+ names @7 :List(Text); baseline @8 :List(Coordinate); target @9 :List(Coordinate);
+ baselineSha256 @10 :Text; targetSha256 @11 :Text;
+ startedMonoTime @12 :UInt64; observedMonoTime @13 :UInt64; validUntilMonoTime @14 :UInt64;
+ responseWitness @15 :LiveTrackingResponseWitness;
+ targetSequence @16 :UInt64; deadlineMonoTime @17 :UInt64;
+ struct Coordinate { name @0 :Text; value @1 :Float64; }
+}
+struct LiveTrackingApplication @0xdb85b982067f1bc1 {
+ version @0 :UInt16; binding @1 :LiveTrackingBinding; trialId @2 :Text;
+ sequence @3 :UInt64; controlMonoTime @4 :UInt64; status @5 :Text;
+ applied @6 :List(LiveTrackingTrial.Coordinate); appliedSha256 @7 :Text;
+ confirmedTargetSha256 @8 :Text; reason @9 :Text; targetSequence @10 :UInt64;
+}
+
+struct LiveTrackingRestore @0xef6257bed9318012 {
+ version @0 :UInt16; protocol @1 :Text; binding @2 :LiveTrackingBinding;
+ historyScope @3 :Text; historyTrialId @4 :Text; target @5 :List(LiveTrackingTrial.Coordinate);
+ targetSha256 @6 :Text; sequence @7 :UInt64; observedMonoTime @8 :UInt64;
+ validUntilMonoTime @9 :UInt64; responseWitness @10 :LiveTrackingResponseWitness;
+}
+
+struct LiveTrackingResponseCertificate @0xbbb8f17940692312 {
+ version @0 :Text; modelRevision @1 :Text; lagNs @2 :UInt64;
+ slope @3 :Float64; intercept @4 :Float64; commandLow @5 :Float64;
+ commandHigh @6 :Float64; heldoutRmse @7 :Float64;
+ trainBlockIds @8 :List(Text); heldoutBlockIds @9 :List(Text);
+ sourceInventorySha256 @10 :Text; identificationSha256 @11 :Text; identifiedMonoTime @12 :UInt64;
+ provenance @13 :Text; parentModelRevision @14 :Text; requalificationSha256 @15 :Text;
+}
+struct LiveTrackingResponseWitness @0xdaa1a9f0d8968e31 {
+ certificate @0 :LiveTrackingResponseCertificate;
+ lastControlMonoTime @1 :UInt64; lastApplyMonoTime @2 :UInt64; lastPoseMonoTime @3 :UInt64;
+ windowStartMonoTime @4 :UInt64; independentPoses @5 :UInt16;
+ residualRmse @6 :Float64; validUntilMonoTime @7 :UInt64;
 }

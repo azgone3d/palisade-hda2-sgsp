@@ -36,7 +36,7 @@ class CarControllerParams:
   MAX_LTA_DRIVER_TORQUE_ALLOWANCE = 150  # slightly above steering pressed allows some resistance when changing lanes
 
   def __init__(self, CP):
-    if CP.flags & ToyotaFlags.RAISED_ACCEL_LIMIT:
+    if CP.flags & (ToyotaFlags.RAISED_ACCEL_LIMIT | ToyotaFlags.GAS_INTERCEPTOR):
       self.ACCEL_MAX = 2.0
     else:
       self.ACCEL_MAX = 1.5  # m/s2, lower than allowed 2.0 m/s^2 for tuning reasons
@@ -57,7 +57,9 @@ class ToyotaSafetyFlags(IntFlag):
   LTA = (4 << 8)
   SECOC = (8 << 8)
   LONG_FILTER = (16 << 8)
+  SECOC_RADAR_LONG = SECOC | LONG_FILTER  # Exact radar-disable SecOC profile; separates its keepalive permission.
   GAS_INTERCEPTOR = (32 << 8)
+  ALT_CRUISE = (64 << 8)  # Exact Lexus IS DSU MAIN profile
   RAV4H_FILTER_PROFILE = (128 << 8)  # Exact smartDSU owner; bit14 remains reserved for ALT_CRUISE
 
 
@@ -81,7 +83,9 @@ class ToyotaFlags(IntFlag):
   RAISED_ACCEL_LIMIT = 1024
   SECOC = 2048
   AUTO_BRAKE_HOLD = 4096
+  RADAR_CAN_FILTER = 1 << 18  # Exact radar adapter; includes four-byte 2FF, distinct from legacy SDSU status
   GAS_INTERCEPTOR = 1 << 17  # Exact paired pedal owner
+  DSU_BYPASS = 1 << 19  # Camera-bus DSU adapter; independent of smartDSU/filter
   ZSS = 1 << 16  # Detected Prius secondary steering sensor; host-only, no safetyParam allocation
 
   # deprecated flags
@@ -180,7 +184,7 @@ class CAR(Platforms):
       ToyotaCarDocs("Toyota Camry Hybrid 2018-20", video="https://www.youtube.com/watch?v=Q2DYY0AWKgk"),
     ],
     CarSpecs(mass=3400. * CV.LB_TO_KG, wheelbase=2.82448, steerRatio=13.7, tireStiffnessFactor=0.7933),
-    {Bus.pt: 'toyota_nodsu_pt_generated'},
+    {Bus.pt: 'toyota_nodsu_pt_generated', Bus.radar: 'toyota_radar_dsu_tssp'},
     flags=ToyotaFlags.NO_DSU,
   )
   TOYOTA_CAMRY_TSS2 = ToyotaTSS2PlatformConfig( # TSS 2.5
@@ -330,7 +334,7 @@ class CAR(Platforms):
     dbc_dict('toyota_tnga_k_pt_generated', 'toyota_adas'),
   )
   TOYOTA_SIENNA_4TH_GEN = ToyotaSecOCPlatformConfig(
-    [ToyotaSecOcCarDocs("Toyota Sienna 2021-23", min_enable_speed=MIN_ACC_SPEED)],
+    [ToyotaSecOcCarDocs("Toyota Sienna 2021-25", min_enable_speed=MIN_ACC_SPEED)],
     CarSpecs(mass=4625. * CV.LB_TO_KG, wheelbase=3.06, steerRatio=17.8, tireStiffnessFactor=0.444),
   )
 
@@ -634,6 +638,7 @@ def stopping_decel_rate(CP):
       len(CP.safetyConfigs) == 1 and CP.safetyConfigs[0].safetyModel == CarParams.SafetyModel.toyota and
       CP.openpilotLongitudinalControl and not CP.passive and not CP.dashcamOnly and not CP.notCar):
     return 0.3
-  return None
+  from opendbc.car.toyota.dom_defaults import stopping_decel_rate as legacy_stopping_rate
+  return legacy_stopping_rate(CP)
 
 ARS510_RADAR_CAR = {CAR.TOYOTA_RAV4_TSS2_2022, CAR.TOYOTA_RAV4_TSS2_2023}

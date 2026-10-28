@@ -38,7 +38,9 @@ static bool honda_mvl_stock = false;
 static uint8_t honda_mvl_buttons_fresh = 0U;
 static bool honda_rdx_high_gas = false;
 static bool aol_honda_bosch_long = false;
-static uint32_t aol_honda_main_ts = 0U;
+// Legacy and source-bound Honda owners are mutually exclusive. Both require
+// the same physical MAIN timestamp, so retain a single storage location.
+#define aol_honda_main_ts honda_stock_aol_main_ts
 #define AOL_HONDA_MAIN_TIMEOUT_US 300000U
 typedef enum {HONDA_NIDEC, HONDA_BOSCH} HondaHw;
 static HondaHw honda_hw = HONDA_NIDEC;
@@ -369,7 +371,8 @@ static safety_config honda_nidec_init(uint16_t param) {
     .msg = {{0x201, 0, 6, 50U, .ignore_checksum = true,
              .ignore_counter = true, .ignore_quality_flag = true}, {0}, {0}},
   };
-  honda_interceptor_reset((param == 32U) || (param == 36U));
+  honda_interceptor_reset((param == 32U) || (param == 36U) ||
+    ((alternative_experience == 32) && ((param == 544U) || (param == 548U) || (param == 804U))));
   const uint16_t HONDA_PARAM_NIDEC_ALT = 4;
 
   honda_hw = HONDA_NIDEC;
@@ -419,7 +422,7 @@ static safety_config honda_nidec_init(uint16_t param) {
 }
 
 static safety_config honda_bosch_init(uint16_t param) {
-  honda_mvl_stock = ((param == 80U) || (param == 81U)) && (alternative_experience == 0);
+  honda_mvl_stock = ((param == 80U) || (param == 81U)) && ((alternative_experience == 0) || (alternative_experience == 32));
   honda_mvl_buttons_fresh = 0U;
   honda_interceptor_reset(false);
   // Bosch
@@ -512,7 +515,7 @@ static safety_config honda_bosch_init(uint16_t param) {
 #ifdef ALLOW_DEBUG
   const uint16_t HONDA_PARAM_BOSCH_LONG = 2;
   honda_bosch_long = GET_FLAG(param, HONDA_PARAM_BOSCH_LONG);
-  honda_rdx_high_gas = (param == 131U) || (param == 163U);
+  honda_rdx_high_gas = (param == 131U) || (param == 163U) || (param == 2211U);
   aol_honda_bosch_long = honda_bosch_long && ((param == 34U) || (param == 35U) || (param == 163U));
 #endif
   if (aol_honda_bosch_long) {

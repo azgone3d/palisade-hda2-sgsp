@@ -11,15 +11,8 @@ from openpilot.starpilot.ui.presentation import FontRole, Profile
 
 
 def _overlaps_slc_actions(rect, profile, state) -> bool:
-  from openpilot.starpilot.ui.large_speed_geometry import ACTION_HEADER_HEIGHT
-  from openpilot.starpilot.ui.onroad_state import slc_controls
-  for control in slc_controls(profile, state):
-    # Include the decision header drawn above the buttons.
-    left, top, right, bottom = control.bounds
-    top -= ACTION_HEADER_HEIGHT
-    if left < rect.x + rect.width and rect.x < right and top < rect.y + rect.height and rect.y < bottom:
-      return True
-  return False
+  from openpilot.starpilot.ui.onroad_state import slc_action_occludes
+  return slc_action_occludes(profile, state, (rect.x, rect.y, rect.x + rect.width, rect.y + rect.height))
 
 
 def arrival_time(remaining_seconds: float, now: datetime) -> str:
@@ -52,14 +45,12 @@ class NavigationCard:
   def _placed(self, state):
     if self.fonts.profile == Profile.COMPACT:
       return rl.Rectangle(244, 18, 72, 72) if self.collapsed else rl.Rectangle(96, 16, 368, 142)
-    # Android Auto layouts place the card; the comma keeps its fixed spot.
+    # The card follows the right edge; legacy callers without a placement keep its fixed spot.
     placed = state.customization["layouts"]["large"].get("nav_card")
-    if placed is not None:
-      if not placed["enabled"]:
-        return None
-      x, y = placed["x"], placed["y"]
-    else:
-      x, y = 1230 + state.viewport_width - 1860, 415
+    if placed is not None and not placed["enabled"]:
+      return None
+    x, y = (placed["x"], placed["y"]) if placed is not None else (1230, 415)
+    x += state.viewport_width - 1860
     return rl.Rectangle(x + 448, y, 112, 112) if self.collapsed else rl.Rectangle(x, y, 560, 195)
 
   def press(self, x, y, state):

@@ -17,7 +17,7 @@ def test_generic_actual_card_publication_reaches_blend_settings(identity, monkey
   from openpilot.cereal import messaging
   from openpilot.common.params import Params
   from openpilot.common.prefix import OpenpilotPrefix
-  from openpilot.selfdrive.car.card import Car, alpha_long_requested
+  from openpilot.selfdrive.car.card import Car
   from openpilot.selfdrive.controls.controlsd import Controls
   from openpilot.starpilot.controller_extensions import ManualTurnInputs
   from openpilot.starpilot.lateral.tests.test_lane_runtime import feed
@@ -34,7 +34,7 @@ def test_generic_actual_card_publication_reaches_blend_settings(identity, monkey
     saved.put_bool('FordHumanTurnDetection', False, block=True)
     for key, value in (("FordCurvatureBlendLow", 0.25), ("FordCurvatureBlendHigh", 0.65), ("FordCurvatureLaneChangeFactor", 1.1)):
       saved.put(key, value, block=True)
-    cp = params(identity, alpha_long_requested(saved, is_release=release), release)
+    cp = params(identity, alpha, release)
     cp.carVin = '0' * 17
     cp.carFw = []
     expected = cp.to_dict()
@@ -80,7 +80,10 @@ def test_generic_actual_card_publication_reaches_blend_settings(identity, monkey
       controls.publish(command, lateral_log)
       _, packets = ci.apply(command.as_reader(), 1_000_000_000)
       assert packets
-      assert ci.CC.classic_extended_announced
+      assert not ci.CC.classic_extended_announced
+      heartbeat = [data for address, data, _ in packets if address == 0x3CA]
+      assert heartbeat and all(not (data[4] & 2) for data in heartbeat)
+      assert all(((data[0] >> 4) & 7) == 0 for address, data, _ in packets if address == 0x3D6)
       assert not owner.human_turn_enabled
       assert (owner.curvature_blend_low, owner.curvature_blend_high, owner.curvature_lane_change_factor) == (0.25, 0.65, 1.1)
     finally:

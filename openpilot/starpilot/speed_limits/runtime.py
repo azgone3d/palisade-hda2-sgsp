@@ -6,10 +6,10 @@ from dataclasses import dataclass, replace
 
 import openpilot.cereal.messaging as messaging
 from openpilot.cereal.services import SERVICE_LIST
+from openpilot.selfdrive.car.cruise import V_CRUISE_MIN, V_CRUISE_MAX
 from openpilot.starpilot.speed_limits import acceptance as acc
 from openpilot.starpilot.speed_limits import action_arbitration as arb
 from openpilot.starpilot.speed_limits import composition as comp
-from openpilot.starpilot.speed_limits import lead_relaxation as lr
 from openpilot.starpilot.speed_limits import selection as sel
 from openpilot.starpilot.speed_limits import speed_domain as sd
 from openpilot.starpilot.speed_limits.runtime_settings import Settings
@@ -60,20 +60,6 @@ def dashboard_observation(evidence, *, car_fingerprint: str, session_id: str, no
                                      value=f"{session_id}:{producer_session}:{car_fingerprint}:{int(evidence.episode)}")
   return acc.Observation(acc.ObservationKind.VALID,
                          acc.Candidate(sel.Source.DASHBOARD.value, identity, float(evidence.speedMps)))
-
-
-def _lead(sm, now_ns: int) -> lr.LeadEvidence:
-  if not _fresh(sm, "radarState", now_ns):
-    return lr.LeadEvidence(lr.LeadKind.STALE if sm.logMonoTime.get("radarState", 0) else lr.LeadKind.UNKNOWN)
-  lead = sm["radarState"].leadOne
-  if not lead.present:
-    return lr.LeadEvidence(lr.LeadKind.VALID, False, False, 0.0, 0.0, 0.0)
-  if not all(_number(value, positive=(name == "distance")) for name, value in
-             (("distance", lead.dRel), ("speed", lead.vLeadK))):
-    return lr.LeadEvidence(lr.LeadKind.UNKNOWN)
-  if type(lead.aLeadK) not in (int, float) or not math.isfinite(lead.aLeadK):
-    return lr.LeadEvidence(lr.LeadKind.UNKNOWN)
-  return lr.LeadEvidence(lr.LeadKind.VALID, True, True, float(lead.dRel), float(lead.vLeadK), float(lead.aLeadK))
 
 
 def _authority(CP, sm, host_long: bool, lateral: bool, *, long_enabled: bool) -> acc.Authority:
@@ -127,8 +113,11 @@ class Runtime:
   """Own a unique drive session, action ledger and current-frame UI receipt."""
 
   def __init__(self, settings: Settings, *, session_id: str | None = None, vision_enabled: bool = False,
-               vision_control_qualified: bool = False, vision_display_qualified: bool = False):
+               vision_control_qualified: bool = False, vision_display_qualified: bool = False, is_metric: bool = False):
+    if type(is_metric) is not bool:
+      raise ValueError('SLC display units must be Boolean')
     self.settings = settings
+    self.is_metric = is_metric
     self.map_source = MapSource()
     self.vision_enabled = vision_enabled
     # Exact saved Vision opt-in may grant control; source identity and current
@@ -153,9 +142,15 @@ class Runtime:
     self._ui_receipt = None
     self.command_issued_ns = 0
     self.command_expiry_ns = 0
+    self.set_speed_after_ns = 0
     self.command_expected_mps = 0.0
     self.command_target_mps = 0.0
     self.command_card_producer = ''
+    self.commanded_acceptance: acc.AcceptedLimit | None = None
+    self.last_received: acc.Candidate | None = None
+    self.toyota_eligible = False
+    self.toyota_projection = None
+    self.commanded_generation = -1
 
   def reset(self) -> None:
     self.map_source.reset()
@@ -171,6 +166,7 @@ class Runtime:
     self.last_ui_sequence = -1
     self.last_cruise_event = -1
     self.last_cruise_producer = None
+    # Keep the SET deadline: the previous session's command may still be in flight.
     self.last_command_id = 0
     self.command_status = ''
     self._command_ui_sequence = 0
@@ -180,15 +176,27 @@ class Runtime:
     self.command_expected_mps = 0.0
     self.command_target_mps = 0.0
     self.command_card_producer = ''
+    self.commanded_acceptance = None
+    self.last_received = None
+    self.toyota_projection = None
+    self.commanded_generation = -1
 
-  def update_offsets(self, offsets: sd.OffsetSchedule) -> None:
+  def update_offsets(self, offsets: sd.OffsetSchedule, *, is_metric: bool | None = None) -> None:
+    if is_metric is not None:
+      if type(is_metric) is not bool:
+        raise ValueError('SLC display units must be Boolean')
+      self.is_metric = is_metric
+    changed_offsets = offsets != self.settings.offsets
     self.settings = replace(self.settings, offsets=offsets)
-    # Renew action IDs when the adjusted target changes, keeping accepted/rejected limits.
+    # Renew actions for new offsets/units without forgetting driver choices.
     acceptance = replace(self.state.acceptance, observation=acc.Observation(acc.ObservationKind.UNKNOWN),
                          pending=None, presentation=None, timer_running=False)
     self.state = replace(self.state, acceptance=acceptance)
     self._ui_receipt = None
-    self.command_status = ''
+    # Display units alone must not reapply an accepted SET in different rounding.
+    if changed_offsets:
+      self.command_status = ''
+      self.commanded_acceptance = None
 
   def _event_current(self, event: CruiseEvent, sm, now_ns: int) -> bool:
     return (bool(event.producer_session) and 0 < event.observed_ns <= now_ns and
@@ -269,8 +277,16 @@ class Runtime:
             abs(event.selected_mps - self.command_target_mps) > 0.5):
           return
         self.command_status = 'applied'
+        self.set_speed_after_ns = event.observed_ns
+        if self.commanded_acceptance == self.state.acceptance.accepted:
+          self.state = replace(self.state, override=replace(self.state.override, applied_selected_mps=event.selected_mps))
       else:
         self.command_status = 'rejected'
+        self.set_speed_after_ns = event.observed_ns
+
+  def _set_speed_ready(self, sm) -> bool:
+    # A prior command may apply after the SET sample, even if its receipt has arrived.
+    return int(sm.logMonoTime.get('carState', 0)) > self.set_speed_after_ns
 
   def _observations(self, sm, CP, now_ns: int, now_boot_ns: int | None = None) -> dict[sel.Source, acc.Observation]:
     unknown = acc.Observation(acc.ObservationKind.UNKNOWN)
@@ -346,6 +362,7 @@ class Runtime:
                         selfdrive.enabled and sm['carControl'].enabled)
     lateral = bool(car_control_fresh and sm['carControl'].latActive and selfdrive_fresh)
     authority = _authority(CP, sm, host_long, lateral, long_enabled=long_enabled)
+    authority = replace(authority, accelerator_override=bool(CP.openpilotLongitudinalControl and long_enabled and car_state.gasPressed))
     selected = float(car_state.vCruise) if car_fresh and _number(car_state.vCruise) else 0.0
     selected_cluster = float(car_state.vCruiseCluster) if car_fresh and _number(car_state.vCruiseCluster) else None
     ego_valid = car_fresh and _number(car_state.vEgo) and _number(car_state.vEgoCluster)
@@ -356,9 +373,8 @@ class Runtime:
     return comp.Frame(now_ns, self._observations(sm, CP, now_ns, now_boot_ns), self.settings.selection, authority,
                       self.settings.acceptance, self.settings.offsets,
                       sd.DomainStatus.VALID if car_fresh and selected_cluster is not None else sd.DomainStatus.STALE,
-                      ego, bool(car_state.gasPressed) if car_fresh and self.settings.manual_override else False,
-                      _lead(sm, now_ns), self.settings.lead_policy, host, action=action, adopt=adopt,
-                      classified_cruise=classified)
+                      ego, bool(car_state.gasPressed) if car_fresh else False, host, action=action, adopt=adopt,
+                      classified_cruise=classified, is_metric=self.is_metric, set_speed_ready=self._set_speed_ready(sm))
 
   def _action(self, request: Action | None, now_ns: int) -> tuple[acc.DriverAction | None, acc.AdoptRequest | None, int | None]:
     if request is None or request.session_id != self.session_id or request.kind not in ("accept", "reject", "adopt"):
@@ -385,7 +401,9 @@ class Runtime:
 
   def step(self, sm, CP, *, now_ns: int, now_boot_ns: int | None = None, request: Action | None = None,
            cruise_event: CruiseEvent | None = None) -> Output:
-    old_accepted = self.state.acceptance.accepted
+    from openpilot.starpilot.speed_limits.toyota import eligible, projection
+    self.toyota_eligible = eligible(CP)
+    self.toyota_projection = projection(sm, now_ns) if self.toyota_eligible else None
     old_pending = self.state.acceptance.pending
     if self.command_status == 'issued' and now_ns > self.command_expiry_ns:
       self.command_status = 'expired'
@@ -406,9 +424,10 @@ class Runtime:
         self.last_action_result = action_result
       completed = arb.step(self.ledger, arb.CompleteAction(self.session_id, action_id), now_ns=now_ns)
       self.ledger = completed.state
-    command = self._command(result, sm, CP, now_ns, old_accepted, old_pending, action, adopt)
+    commanded_before = self.commanded_acceptance
+    command = self._command(result, sm, now_ns, old_pending, action, adopt)
     message = self._message(now_ns, result, sm, frame)
-    if command is not None:
+    if command is not None and (request is not None or commanded_before != self.commanded_acceptance):
       self._command_ui_sequence = request.sequence_id if request is not None else 0
     message.slcState.commandActionSequenceId = getattr(self, '_command_ui_sequence', 0)
     if action_result is not None and action_result.status == 'resolved':
@@ -418,50 +437,78 @@ class Runtime:
       message.slcState.actionSequenceId, message.slcState.actionStatus = receipt
     return Output(result, message, action_result, command, self.settings)
 
-  def _command(self, result: comp.Result, sm, CP, now_ns: int, old_accepted, old_pending,
+  def _command(self, result: comp.Result, sm, now_ns: int, old_pending,
                action: acc.DriverAction | None, adopt: acc.AdoptRequest | None):
     decision = result.acceptance
-    if (decision is None or (decision.history_write is None and decision.adoption is None) or result.domain is None or
-        result.domain.context is None or result.selection is None or
-        result.selection.selected_source is not sel.Source.DASHBOARD or
-        (action is None and adopt is None) or
-        (action is not None and (old_pending is None or action.kind is not acc.ActionKind.ACCEPT))):
+    if (decision is None or decision.basis not in ('accepted', 'driver_accept', 'driver_adopt') or
+        decision.state.accepted is None or decision.state.pending is not None or decision.authority is None or
+        not decision.authority.can_control or result.coordinate is None or
+        result.domain is None or result.domain.context is None or result.selection is None or
+        result.selection.observation.candidate is None or
+        result.selection.observation.candidate.speed_mps != decision.state.accepted.candidate.speed_mps or
+        result.state.override.persistent_selected_mps is not None):
       return None
     target = result.domain.context.effective_cluster_mps
+    if self.toyota_eligible:
+      row = self.toyota_projection
+      accepted = decision.state.accepted
+      if (row is None or row.status != 'ready' or row.sessionId != self.session_id or
+          int(row.acceptedMonoTime) != accepted.accepted_at_ns or
+          abs(float(row.approvedTargetMps) - target) > 0.02):
+        self.commanded_acceptance = None
+        self.command_status = ''
+        return None
+      if self.commanded_generation != result.state.control_generation:
+        self.commanded_acceptance = None
+      self.commanded_generation = result.state.control_generation
     selected_kph = float(sm['carState'].vCruise)
-    previous_limit = old_accepted.candidate.speed_mps if old_accepted is not None else 0.0
     if (not _number(target, positive=True) or not _number(selected_kph, positive=True) or
-        selected_kph >= 255 or target <= selected_kph / 3.6 + 0.1 or
-        (action is not None and decision.history_write.candidate.speed_mps <= previous_limit)):
+        selected_kph >= 255 or not V_CRUISE_MIN / 3.6 <= target <= V_CRUISE_MAX / 3.6):
       return None
+    if sd.set_speed_matches(target, selected_kph, float(sm['carState'].vCruiseCluster), self.is_metric):
+      if not self._set_speed_ready(sm):
+        return None
+      self.commanded_acceptance = decision.state.accepted
+      self.command_status = 'applied'
+      self.state = replace(self.state, override=replace(self.state.override, applied_selected_mps=selected_kph / 3.6))
+      return None
+    if self.commanded_acceptance == decision.state.accepted and decision.adoption is None:
+      if self.command_status in ('issued', 'applied') or abs(selected_kph / 3.6 - self.command_expected_mps) > 0.1:
+        return None
     evidence = sm['slcDashboardObservation']
-    if dashboard_observation(evidence, car_fingerprint=str(CP.carFingerprint),
-                             session_id=self.session_id, now_ns=now_ns).kind is not acc.ObservationKind.VALID:
-      return None
-    expiry = min(int(evidence.validUntilMonoTime), now_ns + int(2e9 / SERVICE_LIST['slcState'].frequency))
+    expiry = now_ns + int(2e9 / SERVICE_LIST['slcState'].frequency)
+    if result.selection.selected_source is sel.Source.DASHBOARD:
+      expiry = min(expiry, int(evidence.validUntilMonoTime))
+    elif result.selection.selected_source is sel.Source.VISION:
+      evidence = sm['slcVisionObservation'].vision
+      expiry = min(expiry, int(evidence.validUntilMonoTime))
     if expiry <= now_ns:
       return None
+    self.commanded_acceptance = decision.state.accepted
     self.last_command_id += 1
     self.command_status = 'issued'
     self.command_issued_ns = now_ns
     self.command_expiry_ns = expiry
+    self.set_speed_after_ns = max(self.set_speed_after_ns, expiry)
     self.command_expected_mps = selected_kph / 3.6
     self.command_target_mps = target
-    self.command_card_producer = str(evidence.producerSessionId)
+    self.command_card_producer = str(sm['slcDashboardObservation'].producerSessionId)
     command = messaging.new_message('slcCruiseCommand')
     command.valid = True
     command.logMonoTime = now_ns
     record = command.slcCruiseCommand
-    record.kind = 'adoptAcceptedHigherLimit'
+    record.kind = 'adoptAcceptedLimit'
+    record.source = result.selection.selected_source.value
     record.sessionId = self.session_id
     record.commandId = self.last_command_id
-    record.actionId = action.sequence_id if action is not None else adopt.sequence_id
+    record.actionId = action.sequence_id if action is not None else adopt.sequence_id if adopt is not None else 0
     record.decisionId = old_pending.decision_id if old_pending is not None else 0
     record.presentationId = self.state.acceptance.presentation.presentation_id if self.state.acceptance.presentation is not None else 0
-    record.sourceProducerSessionId = str(evidence.producerSessionId)
-    record.sourceEpisode = int(evidence.episode)
-    record.sourceObservedMonoTime = int(evidence.observedMonoTime)
-    record.sourceValidUntilMonoTime = int(evidence.validUntilMonoTime)
+    if result.selection.selected_source in (sel.Source.DASHBOARD, sel.Source.VISION):
+      record.sourceProducerSessionId = str(evidence.producerSessionId)
+      record.sourceEpisode = int(evidence.episode)
+      record.sourceObservedMonoTime = int(evidence.observedMonoTime)
+      record.sourceValidUntilMonoTime = int(evidence.validUntilMonoTime)
     record.issuedMonoTime = now_ns
     record.expiresMonoTime = expiry
     record.expectedSelectedMps = selected_kph / 3.6
@@ -494,37 +541,40 @@ class Runtime:
     state.source = result.selection.selected_source.value if result.selection is not None and result.selection.selected_source is not None else "none"
     if result.selection is not None and result.selection.observation.candidate is not None:
       state.speedLimit = result.selection.observation.candidate.speed_mps
+      self.last_received = result.selection.observation.candidate
     accepted = result.state.acceptance.accepted
     if accepted is not None:
       state.hasAccepted = True
+      state.acceptedMonoTime = accepted.accepted_at_ns
       state.acceptedSpeedLimit = accepted.candidate.speed_mps
       state.acceptedSource = accepted.candidate.source
     if result.domain is not None and result.domain.context is not None:
       state.offset = result.domain.context.offset_mps
-    if result.ceiling is not None and self.settings.enabled:
-      state.hasCeiling = True
-      state.effectiveCap = result.ceiling.speed_mps
     # Publish the qualified domain coordinate; a raw cap is not a cluster value.
     context = result.domain.context if result.domain is not None else None
     if context is not None:
       state.hasEffectiveClusterTarget = True
       state.effectiveClusterTarget = context.effective_cluster_mps
-      state.isLimitingMaxSet = bool(state.hasCeiling and result.ceiling.speed_mps < context.selected_raw_mps)
-    # Override state.active means the override context is eligible, even with no
-    # driver override. Only pedal/persistent contributions actually replace the cap.
-    state.driverOverrideActive = bool(result.override is not None and result.override.contribution_mps is not None)
+    # Accelerator use never creates a set-speed override.
+    state.driverOverrideActive = result.state.override.persistent_selected_mps is not None
     pending = result.state.acceptance.pending
     if pending is not None:
       state.hasPending = True
       state.pendingSpeedLimit = pending.candidate.speed_mps
       state.pendingSource = pending.candidate.source
       state.decisionId = pending.decision_id
-    state.overrideBasis = (result.override.basis if state.driverOverrideActive else 'none')
+      state.automaticAdoptionPending = pending.automatic
+      state.pendingSinceMonoTime = now_ns - pending.active_elapsed_ns
+    state.overrideBasis = 'persistent' if state.driverOverrideActive else 'none'
     state.retainedOverride = bool(result.state.override.persistent_selected_mps is not None)
     shown = result.state.acceptance.presentation
     ego = frame.ego_pair
     ego_delta = (max(0.0, ego.cluster_mps - ego.raw_mps)
                  if ego.status is sd.DomainStatus.VALID and ego.cluster_mps is not None and ego.raw_mps is not None else 0.0)
+    if self.last_received is not None:
+      state.lastReceivedSpeedLimit = self.last_received.speed_mps
+      state.lastReceivedSource = self.last_received.source
+      state.lastReceivedAdjustedLimit = sd.adjusted_limit(self.last_received.speed_mps, self.settings.offsets, minimum_target_mps=ego_delta) or 0.0
     for candidate, value_field, flag_field in (
       (accepted.candidate if accepted is not None else None, 'acceptedAdjustedLimit', 'hasAcceptedAdjustedLimit'),
       (pending.candidate if pending is not None else None, 'pendingAdjustedLimit', 'hasPendingAdjustedLimit'),
@@ -535,6 +585,8 @@ class Runtime:
       if value is not None:
         setattr(state, value_field, value)
         setattr(state, flag_field, True)
+    if state.hasPresentationAdjustedLimit:
+      state.offset = float(state.presentationAdjustedLimit) - float(state.speedLimit)
     if shown is not None:
       state.presentationId = shown.presentation_id
     state.status = result.status

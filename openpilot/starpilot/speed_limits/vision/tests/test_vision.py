@@ -5,6 +5,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
+from typing import TypedDict
 
 import numpy as np
 
@@ -23,6 +24,14 @@ from openpilot.common.params import Params
 from openpilot.common.prefix import OpenpilotPrefix
 from openpilot.starpilot.ui.feature_settings_owner import FeatureSettingsOwner
 from openpilot.starpilot.ui.feature_settings_state import row_change
+
+
+class ObservationContext(TypedDict):
+  receipt_mono_ns: int
+  now_mono_ns: int
+  now_boot_ns: int
+  car_fingerprint: str
+  drive_session: str
 
 
 class TestVision(unittest.TestCase):
@@ -65,10 +74,16 @@ class TestVision(unittest.TestCase):
     reads = [Detection(55, 0.60), Detection(55, 0.76), None, Detection(65, 0.99), None]
     with patch.object(core, 'infer', side_effect=reads):
       self.assertIsNone(core.observe(frame, now=1.0))
-      self.assertEqual(core.observe(frame, now=1.2)[0], 55)
-      self.assertEqual(core.observe(frame, now=60.0)[0], 55)
+      observed = core.observe(frame, now=1.2)
+      assert observed is not None
+      self.assertEqual(observed[0], 55)
+      observed = core.observe(frame, now=60.0)
+      assert observed is not None
+      self.assertEqual(observed[0], 55)
       self.assertEqual(core.last_published_support_at, 1.2)
-      self.assertEqual(core.observe(frame, now=61.0)[0], 65)
+      observed = core.observe(frame, now=61.0)
+      assert observed is not None
+      self.assertEqual(observed[0], 65)
       self.assertEqual(core.last_published_support_at, 61.0)
       core.reset()
       self.assertIsNone(core.observe(frame, now=62.0))
@@ -118,7 +133,7 @@ class TestVision(unittest.TestCase):
   def test_actual_typed_wire_and_separate_camera_clock_freshness(self):
     msg = self._event()
     decoded = messaging.log_from_bytes(msg.to_bytes()).slcVisionObservation.vision
-    kw = {'receipt_mono_ns': 1_020_000_000, 'now_mono_ns': 1_030_000_000,
+    kw: ObservationContext = {'receipt_mono_ns': 1_020_000_000, 'now_mono_ns': 1_030_000_000,
           'now_boot_ns': 5_050_000_000, 'car_fingerprint': 'IONIQ6', 'drive_session': 'drive-a'}
     valid = vision_observation(decoded, **kw)
     self.assertIs(valid.kind, ObservationKind.VALID)
@@ -173,11 +188,12 @@ class TestVision(unittest.TestCase):
     event = message.slcVisionObservation.vision
     event.validUntilMonoTime = 3_000_000_000
     decoded = messaging.log_from_bytes(message.to_bytes()).slcVisionObservation.vision
-    kw = {'receipt_mono_ns': 1_500_000_000, 'now_mono_ns': 1_500_000_000,
+    kw: ObservationContext = {'receipt_mono_ns': 1_500_000_000, 'now_mono_ns': 1_500_000_000,
           'now_boot_ns': 5_500_000_000, 'car_fingerprint': 'IONIQ6', 'drive_session': 'drive-a'}
     self.assertIs(vision_observation(decoded, **kw).kind, ObservationKind.VALID)
-    self.assertIs(vision_observation(decoded, **dict(kw, now_mono_ns=3_000_000_001,
-                  now_boot_ns=7_000_000_001)).kind, ObservationKind.STALE)
+    self.assertIs(vision_observation(decoded, receipt_mono_ns=kw['receipt_mono_ns'], now_mono_ns=3_000_000_001,
+                                     now_boot_ns=7_000_000_001, car_fingerprint=kw['car_fingerprint'],
+                                     drive_session=kw['drive_session']).kind, ObservationKind.STALE)
 
   def test_runtime_slow_vision_supports_display_and_control(self):
     message = self._event()
@@ -211,12 +227,13 @@ class TestVision(unittest.TestCase):
     # The sign was last seen at monotonic1s. This camera heartbeat is at60s.
     event.cameraFrameEofBootTime = 64_000_000_000
     event.validUntilMonoTime = 62_000_000_000
-    kw = {'receipt_mono_ns': 60_100_000_000, 'now_mono_ns': 60_100_000_000,
+    kw: ObservationContext = {'receipt_mono_ns': 60_100_000_000, 'now_mono_ns': 60_100_000_000,
           'now_boot_ns': 64_100_000_000, 'car_fingerprint': 'IONIQ6', 'drive_session': 'drive-a'}
     self.assertIs(vision_observation(event, **kw).kind, ObservationKind.VALID)
     self.assertEqual(event.observedMonoTime, 1_000_000_000)
-    self.assertIs(vision_observation(event, **dict(kw, receipt_mono_ns=59_000_000_000)).kind,
-                  ObservationKind.STALE)
+    self.assertIs(vision_observation(event, receipt_mono_ns=59_000_000_000, now_mono_ns=kw['now_mono_ns'],
+                                     now_boot_ns=kw['now_boot_ns'], car_fingerprint=kw['car_fingerprint'],
+                                     drive_session=kw['drive_session']).kind, ObservationKind.STALE)
     event.cameraFrameEofBootTime = 61_000_000_000
     self.assertIs(vision_observation(event, **kw).kind, ObservationKind.STALE)
     event.status = 'unavailable'
@@ -408,8 +425,9 @@ class TestVision(unittest.TestCase):
 
       def advance(self, stamp):
         self.logMonoTime = dict.fromkeys(self.data, stamp)
+        self.data['slcDashboardObservation'].carStateLogMonoTime = stamp
 
-    cp = SimpleNamespace(carFingerprint='IONIQ6', openpilotLongitudinalControl=True)
+    cp = SimpleNamespace(brand='hyundai', carFingerprint='IONIQ6', openpilotLongitudinalControl=True)
     sm = SM(data)
     confirmed = Runtime(parse({'SpeedLimitController': True, 'SLCConfirmation': True,
                                'SLCConfirmationLower': True, 'SLCConfirmationHigher': True,
@@ -419,19 +437,31 @@ class TestVision(unittest.TestCase):
     self.assertEqual(first.message.slcState.source, 'vision')
     self.assertTrue(first.message.slcState.hasPending)
     self.assertFalse(first.message.slcState.hasCeiling)
+    self.assertIsNone(first.command)
     sm.advance(2_020_000_000)
     accepted = confirmed.step(sm, cp, now_ns=2_020_000_000, now_boot_ns=6_020_000_000,
                               request=Action('trial', 1, first.message.slcState.decisionId,
                                              first.message.slcState.presentationId, 'accept'))
     self.assertTrue(accepted.message.slcState.hasAccepted)
-    self.assertTrue(accepted.message.slcState.hasCeiling)
+    self.assertFalse(accepted.message.slcState.hasCeiling)
     self.assertEqual(accepted.message.slcState.sourceProducerSessionId, 'camera-a')
+    self.assertIsNotNone(accepted.command)
+    command = accepted.command.slcCruiseCommand
+    self.assertEqual((command.kind, command.source, command.sourceProducerSessionId),
+                     ('adoptAcceptedLimit', 'vision', 'camera-a'))
+    self.assertAlmostEqual(command.targetMps, evidence.speedMps)
+    self.assertGreater(command.expiresMonoTime, 2_020_000_000)
+    self.assertLessEqual(command.expiresMonoTime, evidence.validUntilMonoTime)
+    # Command action IDs are ledger-local; UI request correlation has its own field.
+    self.assertEqual(command.actionId, confirmed.ledger.last_action_id)
+    self.assertEqual(accepted.message.slcState.commandActionSequenceId, 1)
     sm.advance(2_300_000_000)
     expired = confirmed.step(sm, cp, now_ns=2_300_000_000, now_boot_ns=6_300_000_000)
-    self.assertTrue(expired.message.slcState.hasCeiling)
+    self.assertFalse(expired.message.slcState.hasCeiling)
     self.assertEqual(expired.result.acceptance.basis, 'previous_accepted')
     self.assertEqual(expired.result.acceptance.state.accepted, accepted.result.acceptance.state.accepted)
     self.assertIs(confirmed.vision_diagnostic.kind, ObservationKind.STALE)
+    self.assertIsNone(expired.command)
 
     dashboard.producerSessionId = 'card-a'
     dashboard.status = 'valid'
@@ -440,15 +470,31 @@ class TestVision(unittest.TestCase):
     dashboard.validUntilMonoTime = 2_800_000_000
     dashboard.episode = 1
     dashboard.carStateLogMonoTime = 2_300_000_000
-    fallback = Runtime(parse({'SpeedLimitController': True, 'SLCPriority1': 'Vision',
+    fallback = Runtime(parse({'SpeedLimitController': True, 'SLCConfirmation': True, 'SLCPriority1': 'Vision',
                               'SLCPriority2': 'Dashboard'}), session_id='fallback',
                        vision_enabled=True, vision_control_qualified=True)
     chosen = fallback.step(sm, cp, now_ns=2_300_000_000, now_boot_ns=6_300_000_000)
     self.assertEqual(chosen.message.slcState.source, 'dashboard')
-    self.assertTrue(chosen.message.slcState.hasCeiling)
+    self.assertFalse(chosen.message.slcState.hasCeiling)
+    self.assertTrue(chosen.message.slcState.hasPending)
+    self.assertIsNone(chosen.command)
+    sm.advance(2_310_000_000)
+    chosen_accepted = fallback.step(sm, cp, now_ns=2_310_000_000, now_boot_ns=6_310_000_000,
+                                    request=Action('fallback', 1, chosen.message.slcState.decisionId,
+                                                   chosen.message.slcState.presentationId, 'accept'))
+    self.assertTrue(chosen_accepted.message.slcState.hasAccepted)
+    self.assertFalse(chosen_accepted.message.slcState.hasCeiling)
+    self.assertIsNotNone(chosen_accepted.command)
+    command = chosen_accepted.command.slcCruiseCommand
+    self.assertEqual((command.kind, command.source, command.sourceProducerSessionId),
+                     ('adoptAcceptedLimit', 'dashboard', 'card-a'))
+    self.assertAlmostEqual(command.targetMps, dashboard.speedMps)
+    self.assertGreater(command.expiresMonoTime, 2_310_000_000)
+    self.assertLessEqual(command.expiresMonoTime, dashboard.validUntilMonoTime)
     dashboard.status = 'unknown'
     sm.advance(2_350_000_000)
     missing = fallback.step(sm, cp, now_ns=2_350_000_000, now_boot_ns=6_350_000_000)
-    self.assertTrue(missing.message.slcState.hasCeiling)
+    self.assertFalse(missing.message.slcState.hasCeiling)
     self.assertEqual(missing.result.acceptance.basis, 'previous_accepted')
-    self.assertEqual(missing.result.acceptance.state.accepted, chosen.result.acceptance.state.accepted)
+    self.assertEqual(missing.result.acceptance.state.accepted, chosen_accepted.result.acceptance.state.accepted)
+    self.assertIsNone(missing.command)
